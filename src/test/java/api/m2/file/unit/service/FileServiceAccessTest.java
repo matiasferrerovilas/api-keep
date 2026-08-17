@@ -14,6 +14,7 @@ import api.m2.file.service.FileService;
 import api.m2.file.service.SourceAppResolver;
 import api.m2.file.service.UserService;
 import api.m2.file.service.workspace.WorkspaceService;
+import org.springframework.util.unit.DataSize;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -71,7 +72,7 @@ class FileServiceAccessTest {
 
     @BeforeEach
     void setUp() {
-        StorageProperties storageProperties = new StorageProperties(tempDir.toString());
+        StorageProperties storageProperties = new StorageProperties(tempDir.toString(), DataSize.ofMegabytes(50));
         fileService = new FileService(
                 fileRepository,
                 appFileShareRepository,

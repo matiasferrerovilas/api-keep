@@ -59,7 +59,6 @@ import java.util.zip.ZipOutputStream;
 public class FileService {
 
     private static final String ROOT_PATH = "Home";
-    private static final long MAX_UPLOAD_SIZE_BYTES = 50L * 1024 * 1024;
     private static final String CHECKSUM_ALGORITHM = "SHA-256";
     private static final int TRASH_RETENTION_DAYS = 1;
     private static final Set<SharePermission> READ_GRANTING_PERMISSIONS =
@@ -300,8 +299,9 @@ public class FileService {
     }
 
     private void validateUploadableFile(MultipartFile file) {
-        if (file.getSize() > MAX_UPLOAD_SIZE_BYTES) {
-            throw new BusinessException("El archivo supera el tamaño máximo permitido de 50MB");
+        if (file.getSize() > storageProperties.maxFileSize().toBytes()) {
+            throw new BusinessException(
+                    "El archivo supera el tamaño máximo permitido de " + storageProperties.maxFileSize().toMegabytes() + "MB");
         }
 
         String contentType = file.getContentType();

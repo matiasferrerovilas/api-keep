@@ -4,6 +4,7 @@ import api.m2.file.clients.identity.requests.AddWorkspaceRecord;
 import api.m2.file.clients.identity.response.WorkspaceMemberDTO;
 import api.m2.file.service.workspace.WorkspaceService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -21,16 +22,17 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/v1/workspace")
-@Tag(name = "Workspaces", description = "API para la gestión de workspaces")
+@Tag(name = "Workspaces", description = "API para la gestión de workspaces (proxy hacia api-identity, que es quien los posee)")
 public class WorkspaceController {
 
     private final WorkspaceService workspaceService;
 
     @Operation(
             summary = "Crear un nuevo workspace",
-            description = "Crea un workspace asociado al usuario autenticado.",
+            description = "Crea un workspace asociado al usuario autenticado, delegando la persistencia a api-identity.",
             responses = {
-                    @ApiResponse(responseCode = "201", description = "Workspace creado correctamente")
+                    @ApiResponse(responseCode = "201", description = "Workspace creado correctamente"),
+                    @ApiResponse(responseCode = "400", description = "La descripción del workspace está vacía", content = @Content),
             }
     )
     @PostMapping
@@ -41,6 +43,7 @@ public class WorkspaceController {
 
     @Operation(
             summary = "Listar workspaces del usuario",
+            description = "Retorna los workspaces de los que el usuario autenticado es miembro, junto con su rol en cada uno.",
             responses = {
                     @ApiResponse(responseCode = "200", description = "Workspaces obtenidos correctamente")
             }

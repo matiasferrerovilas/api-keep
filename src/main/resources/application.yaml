@@ -7,6 +7,7 @@ server:
 app:
   storage:
     base-path: ${STORAGE_BASE_PATH:/mnt/storage}
+    max-file-size: ${STORAGE_MAX_FILE_SIZE:50MB}
 
 jwt:
   auth:
@@ -36,8 +37,11 @@ spring:
     time-zone: UTC
   servlet:
     multipart:
-      max-file-size: 500MB
-      max-request-size: 500MB
+      # Alineado con app.storage.max-file-size (arriba) — antes esto quedaba en 500MB mientras
+      # FileService rechazaba a partir de 50MB, dejando pasar uploads grandes por el servlet
+      # para recién descartarlos después de haber gastado ancho de banda y buffer en memoria.
+      max-file-size: ${app.storage.max-file-size}
+      max-request-size: ${app.storage.max-file-size}
   security:
     oauth2:
       resourceserver:
