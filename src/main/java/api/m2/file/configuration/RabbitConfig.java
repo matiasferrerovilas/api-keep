@@ -5,6 +5,7 @@ import org.springframework.amqp.core.TopicExchange;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.JacksonJsonMessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,10 +16,17 @@ import java.util.Optional;
 @Configuration
 public class RabbitConfig {
     public static final String AMQ_TOPIC_EXCHANGE = "file-sharing.topic";
+    public static final String ROUTING_KEY_FILE_SHARED = "file.shared";
 
     @Bean
     public JacksonJsonMessageConverter jackson2JsonMessageConverter(JsonMapper jsonMapper) {
         return new JacksonJsonMessageConverter(jsonMapper);
+    }
+    @Bean
+    public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory, JacksonJsonMessageConverter messageConverter) {
+        RabbitTemplate template = new RabbitTemplate(connectionFactory);
+        template.setMessageConverter(messageConverter);
+        return template;
     }
     @Bean
     public SimpleRabbitListenerContainerFactory rabbitListenerContainerFactory(

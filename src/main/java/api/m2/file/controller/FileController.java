@@ -28,6 +28,8 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import java.util.List;
+
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/v1/folders")
@@ -84,5 +86,16 @@ public class FileController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void deleteNode(@PathVariable Long id) {
         fileService.deleteNode(id);
+    }
+
+    @GetMapping("/trash")
+    @ApiResponse(responseCode = "200", description = "Elementos en la papelera")
+    public List<FileDTO> listTrash(@RequestParam Long workspaceId) {
+        return fileService.listTrash(workspaceId);
+    }
+
+    @PostMapping("/{id}/restore")
+    public FileDTO restoreNode(@PathVariable Long id) {
+        return fileService.restoreNode(id);
     }
 }

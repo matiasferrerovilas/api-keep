@@ -4,18 +4,25 @@ import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.configuration.properties.StorageProperties;
 import api.m2.file.entity.AppFileShare;
 import api.m2.file.entity.FileEntity;
+import api.m2.file.enums.EventType;
 import api.m2.file.enums.FileType;
+import api.m2.file.enums.SharePermission;
 import api.m2.file.exceptions.BusinessException;
+import api.m2.file.exceptions.EntityAlreadyExistsException;
 import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.exceptions.PermissionDeniedException;
 import api.m2.file.exceptions.ServiceException;
 import api.m2.file.mappers.FileDTOMapper;
 import api.m2.file.record.DownloadableFile;
 import api.m2.file.record.FileDTO;
+import api.m2.file.record.events.FileTreeChangedEvent;
 import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.service.workspace.WorkspaceService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -24,24 +31,29 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class FileService {
@@ -49,6 +61,11 @@ public class FileService {
     private static final String ROOT_PATH = "Home";
     private static final long MAX_UPLOAD_SIZE_BYTES = 50L * 1024 * 1024;
     private static final String CHECKSUM_ALGORITHM = "SHA-256";
+    private static final int TRASH_RETENTION_DAYS = 1;
+    private static final Set<SharePermission> READ_GRANTING_PERMISSIONS =
+            EnumSet.of(SharePermission.READ, SharePermission.READ_WRITE);
+    private static final Set<SharePermission> WRITE_GRANTING_PERMISSIONS =
+            EnumSet.of(SharePermission.WRITE, SharePermission.READ_WRITE);
 
     private final FileRepository fileRepository;
     private final AppFileShareRepository appFileShareRepository;
@@ -56,6 +73,39 @@ public class FileService {
     private final FileDTOMapper fileDTOMapper;
     private final UserService userService;
     private final WorkspaceService workspaceService;
+    private final SourceAppResolver sourceAppResolver;
+    private final ApplicationEventPublisher eventPublisher;
+
+    /**
+     * Native workspace membership is the normal path. When it fails, a caller from a different
+     * app (resolved from the JWT's app claim, not a client-supplied header) can still reach this
+     * exact file if it was explicitly shared with that app via {@link AppFileShare} at the
+     * required permission level. This is what makes "Compartir con" in fe-keep actually restrict
+     * anything — previously the permission was stored but nothing ever checked it.
+     */
+    private void verifyAccess(FileEntity file, Long userId, Set<SharePermission> permissionsGrantingAccess) {
+        try {
+            workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), userId);
+        } catch (PermissionDeniedException nativeAccessDenied) {
+            boolean hasShareAccess = sourceAppResolver.resolveCallingApp()
+                    .flatMap(callingApp -> appFileShareRepository.findByFileIdAndApiName(file.getId(), callingApp))
+                    .map(AppFileShare::getPermission)
+                    .filter(permissionsGrantingAccess::contains)
+                    .isPresent();
+
+            if (!hasShareAccess) {
+                throw nativeAccessDenied;
+            }
+        }
+    }
+
+    private void verifyReadAccess(FileEntity file, Long userId) {
+        verifyAccess(file, userId, READ_GRANTING_PERMISSIONS);
+    }
+
+    private void verifyWriteAccess(FileEntity file, Long userId) {
+        verifyAccess(file, userId, WRITE_GRANTING_PERMISSIONS);
+    }
 
     public FileDTO getPersonalFolder(Long workspaceId) {
         var owner = userService.getMe();
@@ -63,7 +113,7 @@ public class FileService {
 
         FileEntity root = getOrCreateRoot(workspaceId, owner);
 
-        List<FileEntity> files = fileRepository.findByWorkspaceId(workspaceId);
+        List<FileEntity> files = fileRepository.findByWorkspaceIdAndDeletedAtIsNull(workspaceId);
 
         var childrenByParentId = files.stream()
                 .filter(file -> file.getParentId() != null)
@@ -99,7 +149,7 @@ public class FileService {
         FileEntity file = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
 
-        workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), userService.getMe().id());
+        verifyReadAccess(file, userService.getMe().id());
 
         Path location = validateWithinBasePath(Path.of(file.getLocation()));
 
@@ -170,6 +220,17 @@ public class FileService {
         }
     }
 
+    /** Best-effort cleanup of a just-written file that turned out to be a duplicate — logs and
+     * moves on rather than masking the real (duplicate-content) error with an I/O one. */
+    private void deleteQuietly(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            log.warn("No se pudo limpiar el archivo duplicado '{}'", path, e);
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public FileDTO uploadFile(Long workspaceId, Long parentId, MultipartFile file) {
         validateUploadableFile(file);
 
@@ -183,20 +244,30 @@ public class FileService {
         String filename = capitalize(originalFilename);
         Path target = validateWithinBasePath(targetDirectory.resolve(filename));
 
-        if (Files.exists(target)) {
-            throw new BusinessException("Ya existe un archivo con el nombre '" + filename + "' en ese destino");
-        }
-
+        // CREATE_NEW makes the existence check and the write a single atomic filesystem
+        // operation — two concurrent uploads of the same name can no longer both pass a separate
+        // Files.exists() check and then race each other into Files.copy(REPLACE_EXISTING).
         MessageDigest digest = newChecksumDigest();
         try {
             Files.createDirectories(target.getParent());
-            try (var input = new DigestInputStream(file.getInputStream(), digest)) {
-                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+            try (var input = new DigestInputStream(file.getInputStream(), digest);
+                    var output = Files.newOutputStream(target, StandardOpenOption.CREATE_NEW)) {
+                input.transferTo(output);
             }
+        } catch (FileAlreadyExistsException e) {
+            throw new BusinessException("Ya existe un archivo con el nombre '" + filename + "' en ese destino");
         } catch (IOException e) {
             throw new UncheckedIOException("No se pudo guardar el archivo: " + target, e);
         }
         String checksum = HexFormat.of().formatHex(digest.digest());
+
+        fileRepository.findByWorkspaceIdAndDeletedAtIsNullAndChecksum(workspaceId, checksum)
+                .ifPresent(duplicate -> {
+                    deleteQuietly(target);
+                    throw new EntityAlreadyExistsException(
+                            "El contenido ya existe en este workspace como '%s'".formatted(duplicate.getName()));
+                });
+
         String contentType = file.getContentType() != null ? file.getContentType() : resolveContentType(target);
 
         LocalDateTime now = LocalDateTime.now();
@@ -215,7 +286,9 @@ public class FileService {
                 .build();
         fileRepository.save(entity);
 
-        return toResponseNode(entity);
+        FileDTO response = toResponseNode(entity);
+        eventPublisher.publishEvent(new FileTreeChangedEvent(workspaceId, EventType.FILE_ADDED, response));
+        return response;
     }
 
     private static String capitalize(String filename) {
@@ -269,7 +342,9 @@ public class FileService {
                 .build();
         fileRepository.save(entity);
 
-        return toResponseNode(entity);
+        FileDTO response = toResponseNode(entity);
+        eventPublisher.publishEvent(new FileTreeChangedEvent(workspaceId, EventType.FILE_ADDED, response));
+        return response;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -277,7 +352,7 @@ public class FileService {
         FileEntity entity = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
 
-        workspaceService.verifyUserIsMemberOfWorkspace(entity.getWorkspaceId(), userService.getMe().id());
+        verifyWriteAccess(entity, userService.getMe().id());
 
         if (entity.getParentId() == null) {
             throw new BusinessException("No se puede renombrar la carpeta raíz");
@@ -308,43 +383,97 @@ public class FileService {
 
         fileRepository.save(entity);
 
-        return toResponseNode(entity);
+        FileDTO response = toResponseNode(entity);
+        eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_UPDATED, response));
+        return response;
     }
 
+    /**
+     * Soft-delete: moves the node (and, for a folder, its whole subtree) to the trash instead of
+     * touching disk. Nothing is actually removed until {@link #purgeExpiredTrash()} sweeps it up
+     * after {@value #TRASH_RETENTION_DAYS} day(s) — see {@link #restoreNode(Long)} to undo this.
+     */
     @Transactional(rollbackFor = Exception.class)
     public void deleteNode(Long id) {
         FileEntity entity = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
 
-        workspaceService.verifyUserIsMemberOfWorkspace(entity.getWorkspaceId(), userService.getMe().id());
+        verifyWriteAccess(entity, userService.getMe().id());
 
         if (entity.getParentId() == null) {
             throw new BusinessException("No se puede eliminar la carpeta raíz");
         }
-
-        Path location = validateWithinBasePath(Path.of(entity.getLocation()));
-
-        try {
-            if (entity.getType() == FileType.FOLDER) {
-                deleteRecursively(location);
-            } else {
-                Files.deleteIfExists(location);
-            }
-        } catch (IOException e) {
-            throw new UncheckedIOException("No se pudo eliminar: " + location, e);
+        if (entity.getDeletedAt() != null) {
+            throw new BusinessException("Ya está en la papelera");
         }
 
-        fileRepository.delete(entity);
+        List<FileEntity> subtree = collectSubtree(entity, fileRepository.findByWorkspaceIdAndDeletedAtIsNull(entity.getWorkspaceId()));
+        LocalDateTime now = LocalDateTime.now();
+        subtree.forEach(node -> node.setDeletedAt(now));
+        fileRepository.saveAll(subtree);
+
+        FileDTO deletedNode = FileDTO.builder().id(entity.getId().toString()).name(entity.getName()).build();
+        eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_DELETED, deletedNode));
     }
 
-    private void deleteRecursively(Path location) throws IOException {
-        if (!Files.exists(location)) {
+    /** Undoes {@link #deleteNode(Long)}: clears deletedAt on the node and whatever was trashed
+     * alongside it, restoring the whole subtree together. */
+    @Transactional(rollbackFor = Exception.class)
+    public FileDTO restoreNode(Long id) {
+        FileEntity entity = fileRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
+
+        verifyWriteAccess(entity, userService.getMe().id());
+
+        if (entity.getDeletedAt() == null) {
+            throw new BusinessException("El archivo no está en la papelera");
+        }
+
+        List<FileEntity> subtree = collectSubtree(entity, fileRepository.findByWorkspaceIdAndDeletedAtIsNotNull(entity.getWorkspaceId()));
+        subtree.forEach(node -> node.setDeletedAt(null));
+        fileRepository.saveAll(subtree);
+
+        FileDTO response = toResponseNode(entity);
+        eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_ADDED, response));
+        return response;
+    }
+
+    public List<FileDTO> listTrash(Long workspaceId) {
+        var owner = userService.getMe();
+        workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
+
+        return fileRepository.findByWorkspaceIdAndDeletedAtIsNotNull(workspaceId).stream()
+                .map(this::toResponseNode)
+                .toList();
+    }
+
+    /**
+     * Sweeps anything trashed more than {@value #TRASH_RETENTION_DAYS} day(s) ago and actually
+     * removes it — disk first (deepest paths first, so a folder only comes off once it's empty),
+     * then the DB row, one node at a time so a disk failure on one item doesn't lose track of the
+     * rest: it's just retried on the next run instead of being deleted from the DB regardless.
+     */
+    @Scheduled(fixedRate = 1, timeUnit = TimeUnit.HOURS)
+    @Transactional(rollbackFor = Exception.class)
+    public void purgeExpiredTrash() {
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(TRASH_RETENTION_DAYS);
+        List<FileEntity> expired = fileRepository.findByDeletedAtBefore(cutoff).stream()
+                .sorted(Comparator.comparingInt((FileEntity e) -> Path.of(e.getLocation()).getNameCount()).reversed())
+                .toList();
+
+        if (expired.isEmpty()) {
             return;
         }
-        try (var stream = Files.walk(location)) {
-            for (Path path : stream.sorted(Comparator.reverseOrder()).toList()) {
-                Files.delete(path);
+        log.info("Purgando {} elementos de la papelera con más de {} día(s)", expired.size(), TRASH_RETENTION_DAYS);
+
+        for (FileEntity entity : expired) {
+            try {
+                Files.deleteIfExists(Path.of(entity.getLocation()));
+            } catch (IOException e) {
+                log.warn("No se pudo purgar '{}' del disco, se reintentará en el próximo ciclo", entity.getLocation(), e);
+                continue;
             }
+            fileRepository.delete(entity);
         }
     }
 
@@ -354,7 +483,7 @@ public class FileService {
         FileEntity entity = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
 
-        workspaceService.verifyUserIsMemberOfWorkspace(entity.getWorkspaceId(), owner.id());
+        verifyWriteAccess(entity, owner.id());
 
         if (entity.getParentId() == null) {
             throw new BusinessException("No se puede mover la carpeta raíz");
@@ -398,7 +527,9 @@ public class FileService {
 
         fileRepository.save(entity);
 
-        return toResponseNode(entity);
+        FileDTO response = toResponseNode(entity);
+        eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_UPDATED, response));
+        return response;
     }
 
     private boolean isDescendant(Long ancestorId, Long candidateId, Map<Long, List<FileEntity>> childrenByParentId) {
@@ -432,9 +563,26 @@ public class FileService {
     }
 
     private Map<Long, List<FileEntity>> childrenByParentId(Long workspaceId) {
-        return fileRepository.findByWorkspaceId(workspaceId).stream()
+        return fileRepository.findByWorkspaceIdAndDeletedAtIsNull(workspaceId).stream()
                 .filter(f -> f.getParentId() != null)
                 .collect(Collectors.groupingBy(FileEntity::getParentId));
+    }
+
+    private static Map<Long, List<FileEntity>> groupByParentId(List<FileEntity> files) {
+        return files.stream()
+                .filter(f -> f.getParentId() != null)
+                .collect(Collectors.groupingBy(FileEntity::getParentId));
+    }
+
+    /** The node plus every descendant found within {@code pool} — used to cascade a trash/restore
+     * to a whole folder at once, since a folder and its children always move through the trash
+     * together. */
+    private List<FileEntity> collectSubtree(FileEntity root, List<FileEntity> pool) {
+        Map<Long, List<FileEntity>> childrenByParentId = groupByParentId(pool);
+        List<FileEntity> subtree = new ArrayList<>();
+        subtree.add(root);
+        collectDescendants(root.getId(), childrenByParentId, subtree);
+        return subtree;
     }
 
     private FileDTO toResponseNode(FileEntity entity) {

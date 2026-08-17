@@ -26,8 +26,9 @@ import java.io.IOException;
 @Configuration
 public class IdentityClientConfig {
 
-    private static final String SOURCE_SERVICE_HEADER = "X-Source-Service";
-    private static final String SOURCE_SERVICE_NAME = "api-keep";
+    // No X-Source-Service header: api-identity now derives the calling app from the forwarded
+    // JWT's app claim (set per-client in Keycloak via a hardcoded-claim mapper), which can't be spoofed by this
+    // backend the way a plain header could.
     private static final String BEARER_PREFIX = "Bearer ";
     private static final String UNKNOWN_ERROR_DETAIL = "Error desconocido al comunicarse con api-identity";
     private static final int HTTP_BAD_REQUEST = 400;
@@ -40,7 +41,6 @@ public class IdentityClientConfig {
     public IdentityClient identityClient(@Value("${identity.base-url}") String baseUrl, JsonMapper jsonMapper) {
         var restClient = RestClient.builder()
                 .baseUrl(baseUrl)
-                .defaultHeader(SOURCE_SERVICE_HEADER, SOURCE_SERVICE_NAME)
                 .requestInterceptor((request, body, execution) -> {
                     request.getHeaders().add(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + this.getCurrentToken());
                     return execution.execute(request, body);

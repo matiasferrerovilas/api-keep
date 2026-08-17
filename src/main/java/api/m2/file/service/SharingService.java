@@ -2,6 +2,7 @@ package api.m2.file.service;
 
 import api.m2.file.entity.AppFileShare;
 import api.m2.file.entity.FileEntity;
+import api.m2.file.events.FileSharedEvent;
 import api.m2.file.exceptions.EntityAlreadyExistsException;
 import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.mappers.AppFileShareMapper;
@@ -25,6 +26,7 @@ public class SharingService {
     private final UserService userService;
     private final WorkspaceService workspaceService;
     private final AppFileShareMapper appFileShareMapper;
+    private final FileShareEventPublisher fileShareEventPublisher;
 
     @Transactional(rollbackFor = Exception.class)
     public FileShareResponse shareFile(CreateFileShareRequest request) {
@@ -47,6 +49,9 @@ public class SharingService {
                 .build();
 
         fileShareRepository.save(share);
+
+        fileShareEventPublisher.publishFileShared(new FileSharedEvent(
+                file.getId(), file.getName(), share.getApiName(), share.getPermission(), owner.id()));
 
         return appFileShareMapper.toResponse(share);
     }
