@@ -13,6 +13,7 @@ import api.m2.file.repository.FileRepository;
 import api.m2.file.service.FileService;
 import api.m2.file.service.SourceAppResolver;
 import api.m2.file.service.UserService;
+import api.m2.file.service.storage.LocalFsStorageAdapter;
 import api.m2.file.service.workspace.WorkspaceService;
 import org.springframework.util.unit.DataSize;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,11 +68,12 @@ class UploadDedupTest {
 
     @BeforeEach
     void setUp() {
-        StorageProperties storageProperties = new StorageProperties(tempDir.toString(), DataSize.ofMegabytes(50));
+        StorageProperties storageProperties = new StorageProperties(tempDir.toString(), DataSize.ofMegabytes(50), DataSize.ofGigabytes(5));
         fileService = new FileService(
                 fileRepository,
                 appFileShareRepository,
                 storageProperties,
+                new LocalFsStorageAdapter(),
                 fileDTOMapper,
                 userService,
                 workspaceService,

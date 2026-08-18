@@ -6,6 +6,7 @@ import api.m2.file.entity.FileEntity;
 import api.m2.file.enums.FileType;
 import api.m2.file.exceptions.BusinessException;
 import api.m2.file.mappers.FileDTOMapper;
+import api.m2.file.record.WorkspaceUsageResponse;
 import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.service.FileService;
@@ -34,20 +35,18 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * El límite de tamaño de subida solía estar hardcodeado a 50MB en FileService mientras
- * application.yaml permitía hasta 500MB a nivel servlet — un upload de, digamos, 200MB pasaba el
- * servlet entero antes de ser rechazado acá. Ahora ambos vienen de la misma property
- * (app.storage.max-file-size); este test usa un límite chico a propósito para probar la
- * validación sin tener que armar un archivo real de 50MB.
- * Lenient porque el test de "rechaza" nunca llega a usar la mayoría de los stubs de setUp() —
- * la validación de tamaño corta la ejecución en la primera línea de uploadFile.
+ * Covers the per-workspace storage quota: uploadFile rejects once currentUsage + incoming size
+ * would exceed app.storage.workspace-quota, and getWorkspaceUsage reports the same two numbers
+ * (usedBytes/quotaBytes) that fe-keep's usage indicator relies on.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
-class UploadSizeLimitTest {
+class WorkspaceQuotaTest {
 
     @Mock
     FileRepository fileRepository;
@@ -69,7 +68,7 @@ class UploadSizeLimitTest {
 
     @BeforeEach
     void setUp() {
-        StorageProperties storageProperties = new StorageProperties(tempDir.toString(), DataSize.ofBytes(10), DataSize.ofGigabytes(5));
+        StorageProperties storageProperties = new StorageProperties(tempDir.toString(), DataSize.ofMegabytes(50), DataSize.ofBytes(20));
         fileService = new FileService(
                 fileRepository,
                 appFileShareRepository,
@@ -95,23 +94,34 @@ class UploadSizeLimitTest {
     }
 
     @Test
-    void uploadFile_rejectsFilesLargerThanTheConfiguredLimit() {
-        var tooLarge = new MockMultipartFile("file", "grande.txt", "text/plain", "esto pesa mas de 10 bytes".getBytes());
+    void uploadFile_rejectsWhenCurrentUsagePlusIncomingSizeExceedsTheQuota() {
+        when(fileRepository.sumSizeByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(15L);
+        var file = new MockMultipartFile("file", "grande.txt", "text/plain", "0123456789".getBytes());
 
-        assertThatThrownBy(() -> fileService.uploadFile(5L, null, tooLarge))
+        assertThatThrownBy(() -> fileService.uploadFile(5L, null, file))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("tamaño máximo permitido");
+                .hasMessageContaining("cuota de almacenamiento");
+
+        verify(fileRepository, never()).save(any(FileEntity.class));
     }
 
     @Test
-    void uploadFile_allowsFilesAtOrUnderTheConfiguredLimit() {
-        // Exactamente 10 bytes: el límite es inclusivo (rechaza estrictamente más grande, no
-        // igual), así que esto tiene que subir sin problema — sirve para probar que el chequeo
-        // no está apagando uploads legítimos por un off-by-one.
-        var atLimit = new MockMultipartFile("file", "justo.txt", "text/plain", "1234567890".getBytes());
+    void uploadFile_allowsWhenCurrentUsagePlusIncomingSizeIsAtOrUnderTheQuota() {
+        when(fileRepository.sumSizeByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(10L);
+        var file = new MockMultipartFile("file", "justo.txt", "text/plain", "0123456789".getBytes());
 
-        var result = fileService.uploadFile(5L, null, atLimit);
+        var result = fileService.uploadFile(5L, null, file);
 
         assertThat(result.name()).isEqualTo("Justo.txt");
+    }
+
+    @Test
+    void getWorkspaceUsage_reportsUsedAndQuotaBytes() {
+        when(fileRepository.sumSizeByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(12L);
+
+        WorkspaceUsageResponse usage = fileService.getWorkspaceUsage(5L);
+
+        assertThat(usage.usedBytes()).isEqualTo(12L);
+        assertThat(usage.quotaBytes()).isEqualTo(20L);
     }
 }

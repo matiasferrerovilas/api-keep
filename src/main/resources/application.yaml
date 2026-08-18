@@ -8,6 +8,7 @@ app:
   storage:
     base-path: ${STORAGE_BASE_PATH:/mnt/storage}
     max-file-size: ${STORAGE_MAX_FILE_SIZE:50MB}
+    workspace-quota: ${STORAGE_WORKSPACE_QUOTA:5GB}
 
 jwt:
   auth:

@@ -38,10 +38,11 @@ public class OpenApiConfig {
                                 • Papelera con purga automática (soft-delete, 1 día de retención)
                                 • Compartir archivos app-a-app (READ / WRITE / READ_WRITE)
                                 • Actualizaciones en vivo por WebSocket (STOMP)
+                                • Cuota de almacenamiento por workspace, con endpoint de consulta de uso
 
                                 **Autenticación:** JWT Bearer Token (OAuth2, Keycloak realm `m2`)
                                 """)
-                        .version("1.2.1")
+                        .version("1.3.0")
                         .contact(new Contact()
                                 .name("API Support")
                                 .email("api-support@movement.eva-core.com")));

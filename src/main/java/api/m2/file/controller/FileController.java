@@ -5,6 +5,7 @@ import api.m2.file.record.DownloadableFile;
 import api.m2.file.record.FileDTO;
 import api.m2.file.record.MoveNodeRequest;
 import api.m2.file.record.RenameNodeRequest;
+import api.m2.file.record.WorkspaceUsageResponse;
 import api.m2.file.service.FileService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -201,5 +202,24 @@ public class FileController {
     @PostMapping("/{id}/restore")
     public FileDTO restoreNode(@Parameter(description = "ID del archivo o carpeta a restaurar") @PathVariable Long id) {
         return fileService.restoreNode(id);
+    }
+
+    @Operation(
+            summary = "Consultar el uso de almacenamiento del workspace",
+            description = "Retorna los bytes actualmente ocupados por archivos no borrados del workspace y la cuota "
+                    + "configurada (`app.storage.workspace-quota`), para mostrar un indicador de uso en el cliente.",
+            responses = {
+                    @ApiResponse(
+                            responseCode = "200",
+                            description = "Uso obtenido correctamente",
+                            content = @Content(schema = @Schema(implementation = WorkspaceUsageResponse.class))
+                    ),
+                    @ApiResponse(responseCode = "403", description = "El usuario no pertenece a ese workspace", content = @Content),
+            }
+    )
+    @GetMapping("/usage")
+    public WorkspaceUsageResponse getWorkspaceUsage(
+            @Parameter(description = "ID del workspace") @RequestParam Long workspaceId) {
+        return fileService.getWorkspaceUsage(workspaceId);
     }
 }

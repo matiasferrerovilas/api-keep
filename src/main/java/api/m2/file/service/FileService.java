@@ -15,9 +15,11 @@ import api.m2.file.exceptions.ServiceException;
 import api.m2.file.mappers.FileDTOMapper;
 import api.m2.file.record.DownloadableFile;
 import api.m2.file.record.FileDTO;
+import api.m2.file.record.WorkspaceUsageResponse;
 import api.m2.file.record.events.FileTreeChangedEvent;
 import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.FileRepository;
+import api.m2.file.service.storage.StorageAdapter;
 import api.m2.file.service.workspace.WorkspaceService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,12 +31,9 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.FileAlreadyExistsException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -50,8 +49,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 @Slf4j
 @Service
@@ -69,6 +66,7 @@ public class FileService {
     private final FileRepository fileRepository;
     private final AppFileShareRepository appFileShareRepository;
     private final StorageProperties storageProperties;
+    private final StorageAdapter storageAdapter;
     private final FileDTOMapper fileDTOMapper;
     private final UserService userService;
     private final WorkspaceService workspaceService;
@@ -126,6 +124,19 @@ public class FileService {
         return fileDTOMapper.toFileDTO(root, childrenByParentId, shareWithByFileId);
     }
 
+    /** Total bytes currently used by the workspace (non-deleted files) against the configured
+     * quota — the contract other apps/fe-keep rely on to render a usage indicator. */
+    public WorkspaceUsageResponse getWorkspaceUsage(Long workspaceId) {
+        var owner = userService.getMe();
+        workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
+
+        long usedBytes = fileRepository.sumSizeByWorkspaceIdAndDeletedAtIsNull(workspaceId);
+        return WorkspaceUsageResponse.builder()
+                .usedBytes(usedBytes)
+                .quotaBytes(storageProperties.workspaceQuota().toBytes())
+                .build();
+    }
+
     private FileEntity getOrCreateRoot(Long workspaceId, UserMe owner) {
         return fileRepository.findByWorkspaceIdAndParentIdIsNull(workspaceId)
                 .orElseGet(() -> {
@@ -156,11 +167,11 @@ public class FileService {
             return downloadFolder(file, location);
         }
 
-        if (!Files.isRegularFile(location)) {
+        if (!storageAdapter.isRegularFile(location.toString())) {
             throw new EntityNotFoundException("El archivo no existe en el disco: " + location);
         }
 
-        StreamingResponseBody body = out -> Files.copy(location, out);
+        StreamingResponseBody body = out -> storageAdapter.copyFileTo(location.toString(), out);
 
         String contentType = file.getContentType() != null ? file.getContentType() : resolveContentType(location);
 
@@ -172,11 +183,11 @@ public class FileService {
     }
 
     private DownloadableFile downloadFolder(FileEntity folder, Path location) {
-        if (!Files.isDirectory(location)) {
+        if (!storageAdapter.isDirectory(location.toString())) {
             throw new EntityNotFoundException("La carpeta no existe en el disco: " + location);
         }
 
-        StreamingResponseBody body = out -> zipDirectory(location, out);
+        StreamingResponseBody body = out -> storageAdapter.zipDirectory(location.toString(), out);
 
         return DownloadableFile.builder()
                 .body(body)
@@ -185,26 +196,9 @@ public class FileService {
                 .build();
     }
 
-    private void zipDirectory(Path sourceDir, OutputStream out) throws IOException {
-        try (ZipOutputStream zos = new ZipOutputStream(out);
-             var stream = Files.walk(sourceDir)) {
-            for (Path path : stream.filter(p -> !p.equals(sourceDir)).sorted().toList()) {
-                String entryName = sourceDir.relativize(path).toString().replace('\\', '/');
-                if (Files.isDirectory(path)) {
-                    zos.putNextEntry(new ZipEntry(entryName + "/"));
-                    zos.closeEntry();
-                } else {
-                    zos.putNextEntry(new ZipEntry(entryName));
-                    Files.copy(path, zos);
-                    zos.closeEntry();
-                }
-            }
-        }
-    }
-
     private String resolveContentType(Path location) {
         try {
-            String contentType = Files.probeContentType(location);
+            String contentType = storageAdapter.probeContentType(location.toString());
             return contentType != null ? contentType : "application/octet-stream";
         } catch (IOException e) {
             return "application/octet-stream";
@@ -223,7 +217,7 @@ public class FileService {
      * moves on rather than masking the real (duplicate-content) error with an I/O one. */
     private void deleteQuietly(Path path) {
         try {
-            Files.deleteIfExists(path);
+            storageAdapter.deleteIfExists(path.toString());
         } catch (IOException e) {
             log.warn("No se pudo limpiar el archivo duplicado '{}'", path, e);
         }
@@ -235,6 +229,7 @@ public class FileService {
 
         var owner = userService.getMe();
         workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
+        validateWorkspaceQuota(workspaceId, file.getSize());
 
         FileEntity parent = resolveParent(workspaceId, parentId, owner);
         Path targetDirectory = Path.of(parent.getLocation());
@@ -243,16 +238,12 @@ public class FileService {
         String filename = capitalize(originalFilename);
         Path target = validateWithinBasePath(targetDirectory.resolve(filename));
 
-        // CREATE_NEW makes the existence check and the write a single atomic filesystem
-        // operation — two concurrent uploads of the same name can no longer both pass a separate
-        // Files.exists() check and then race each other into Files.copy(REPLACE_EXISTING).
+        // storeNew() makes the existence check and the write a single atomic storage operation —
+        // two concurrent uploads of the same name can no longer both pass a separate exists()
+        // check and then race each other into overwriting one another.
         MessageDigest digest = newChecksumDigest();
-        try {
-            Files.createDirectories(target.getParent());
-            try (var input = new DigestInputStream(file.getInputStream(), digest);
-                    var output = Files.newOutputStream(target, StandardOpenOption.CREATE_NEW)) {
-                input.transferTo(output);
-            }
+        try (var input = new DigestInputStream(file.getInputStream(), digest)) {
+            storageAdapter.storeNew(target.toString(), input);
         } catch (FileAlreadyExistsException e) {
             throw new BusinessException("Ya existe un archivo con el nombre '" + filename + "' en ese destino");
         } catch (IOException e) {
@@ -310,6 +301,16 @@ public class FileService {
         }
     }
 
+    private void validateWorkspaceQuota(Long workspaceId, long incomingFileSize) {
+        long quotaBytes = storageProperties.workspaceQuota().toBytes();
+        long currentUsage = fileRepository.sumSizeByWorkspaceIdAndDeletedAtIsNull(workspaceId);
+
+        if (currentUsage + incomingFileSize > quotaBytes) {
+            throw new BusinessException(
+                    "El workspace superó la cuota de almacenamiento de " + storageProperties.workspaceQuota().toMegabytes() + "MB");
+        }
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public FileDTO createFolder(Long workspaceId, Long parentId, String name) {
         var owner = userService.getMe();
@@ -319,12 +320,12 @@ public class FileService {
         String folderName = Path.of(name).getFileName().toString();
         Path target = validateWithinBasePath(Path.of(parent.getLocation()).resolve(folderName));
 
-        if (Files.exists(target)) {
+        if (storageAdapter.exists(target.toString())) {
             throw new BusinessException("Ya existe un archivo con el nombre '" + folderName + "' en ese destino");
         }
 
         try {
-            Files.createDirectories(target);
+            storageAdapter.createDirectories(target.toString());
         } catch (IOException e) {
             throw new UncheckedIOException("No se pudo crear la carpeta: " + target, e);
         }
@@ -362,12 +363,12 @@ public class FileService {
         Path oldLocation = Path.of(entity.getLocation());
         Path newLocation = validateWithinBasePath(oldLocation.resolveSibling(newName));
 
-        if (Files.exists(newLocation)) {
+        if (storageAdapter.exists(newLocation.toString())) {
             throw new BusinessException("Ya existe un archivo con el nombre '" + newName + "' en ese destino");
         }
 
         try {
-            Files.move(oldLocation, newLocation);
+            storageAdapter.move(oldLocation.toString(), newLocation.toString());
         } catch (IOException e) {
             throw new UncheckedIOException("No se pudo renombrar: " + oldLocation, e);
         }
@@ -468,7 +469,7 @@ public class FileService {
 
         for (FileEntity entity : expired) {
             try {
-                Files.deleteIfExists(Path.of(entity.getLocation()));
+                storageAdapter.deleteIfExists(entity.getLocation());
             } catch (IOException e) {
                 log.warn("No se pudo purgar '{}' del disco, se reintentará en el próximo ciclo", entity.getLocation(), e);
                 continue;
@@ -505,13 +506,13 @@ public class FileService {
         Path oldLocation = Path.of(entity.getLocation());
         Path newLocation = validateWithinBasePath(Path.of(newParent.getLocation()).resolve(entity.getName()));
 
-        if (Files.exists(newLocation)) {
+        if (storageAdapter.exists(newLocation.toString())) {
             throw new BusinessException(
                     "Ya existe un archivo con el nombre '" + entity.getName() + "' en ese destino");
         }
 
         try {
-            Files.move(oldLocation, newLocation);
+            storageAdapter.move(oldLocation.toString(), newLocation.toString());
         } catch (IOException e) {
             throw new UncheckedIOException("No se pudo mover: " + oldLocation, e);
         }

@@ -76,6 +76,22 @@ Not supported yet: image/video uploads (rejected by design — see Immich for ph
    ./gradlew bootRun --args='--spring.profiles.active=dev'
    ```
 
+### Demo Mode
+
+Running with the `demo` profile enabled (alongside `dev`/`prod` — it only adds a seeder, it doesn't
+replace the datasource/storage config those provide) seeds a handful of sample folders/files on
+startup, against workspace id `1`:
+
+```bash
+./gradlew bootRun --args='--spring.profiles.active=dev,demo'
+```
+
+This is a suite-wide convention: workspace `1` is shared across every backend's own `demo`
+profile (api-identity creates the workspace itself; this service and others only seed their own
+domain rows against it). Seeding is idempotent — if any file already exists for that workspace,
+the seeder skips and logs instead of duplicating data, so restarting in `demo` mode is safe.
+`DemoDataSeeder` is gated behind `@Profile("demo")` and never runs otherwise.
+
 ### Docker Build
 
 ```bash
