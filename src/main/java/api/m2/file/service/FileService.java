@@ -15,6 +15,7 @@ import api.m2.file.exceptions.ServiceException;
 import api.m2.file.mappers.FileDTOMapper;
 import api.m2.file.record.DownloadableFile;
 import api.m2.file.record.FileDTO;
+import api.m2.file.record.FileSearchResult;
 import api.m2.file.record.WorkspaceUsageResponse;
 import api.m2.file.record.events.FileTreeChangedEvent;
 import api.m2.file.repository.AppFileShareRepository;
@@ -24,6 +25,8 @@ import api.m2.file.service.workspace.WorkspaceService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +35,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Path;
 import java.security.DigestInputStream;
@@ -39,6 +43,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HexFormat;
@@ -58,6 +63,12 @@ public class FileService {
     private static final String ROOT_PATH = "Home";
     private static final String CHECKSUM_ALGORITHM = "SHA-256";
     private static final int TRASH_RETENTION_DAYS = 1;
+    private static final int DEFAULT_RECENT_LIMIT = 20;
+    // Content search is intentionally limited to plain-text and Markdown: their bytes ARE the
+    // searchable text already, no parsing needed. PDFs, images and other binary formats would
+    // need a heavy extraction library (e.g. Apache Tika) to pull searchable text out of them —
+    // explicitly out of scope for this home-lab-scale feature.
+    private static final Set<String> TEXT_SEARCHABLE_EXTENSIONS = Set.of(".txt", ".md");
     private static final Set<SharePermission> READ_GRANTING_PERMISSIONS =
             EnumSet.of(SharePermission.READ, SharePermission.READ_WRITE);
     private static final Set<SharePermission> WRITE_GRANTING_PERMISSIONS =
@@ -171,6 +182,11 @@ public class FileService {
             throw new EntityNotFoundException("El archivo no existe en el disco: " + location);
         }
 
+        // Solo en descarga/apertura real (no en el listado del árbol) — así "Recientes" refleja
+        // acceso genuino y no cualquier archivo que simplemente aparece en pantalla.
+        file.setLastAccessedAt(LocalDateTime.now());
+        fileRepository.save(file);
+
         StreamingResponseBody body = out -> storageAdapter.copyFileTo(location.toString(), out);
 
         String contentType = file.getContentType() != null ? file.getContentType() : resolveContentType(location);
@@ -259,6 +275,7 @@ public class FileService {
                 });
 
         String contentType = file.getContentType() != null ? file.getContentType() : resolveContentType(target);
+        String searchableContent = extractSearchableContent(file, filename);
 
         LocalDateTime now = LocalDateTime.now();
         FileEntity entity = FileEntity.builder()
@@ -270,6 +287,7 @@ public class FileService {
                 .size(file.getSize())
                 .contentType(contentType)
                 .checksum(checksum)
+                .content(searchableContent)
                 .location(target.toString())
                 .createdAt(now)
                 .updatedAt(now)
@@ -287,6 +305,23 @@ public class FileService {
         }
         String lower = filename.toLowerCase(Locale.ROOT);
         return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
+    }
+
+    /** Extracts plain-text content for search when {@code filename} is .txt/.md, {@code null}
+     * otherwise. See {@link #TEXT_SEARCHABLE_EXTENSIONS} for the scope decision. */
+    private String extractSearchableContent(MultipartFile file, String filename) {
+        String lowerName = filename.toLowerCase(Locale.ROOT);
+        boolean isTextSearchable = TEXT_SEARCHABLE_EXTENSIONS.stream().anyMatch(lowerName::endsWith);
+        if (!isTextSearchable) {
+            return null;
+        }
+
+        try {
+            return new String(file.getBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            log.warn("No se pudo extraer el contenido de texto de '{}' para búsqueda", filename, e);
+            return null;
+        }
     }
 
     private void validateUploadableFile(MultipartFile file) {
@@ -597,8 +632,95 @@ public class FileService {
                         .createdAt(entity.getCreatedAt())
                         .contentType(entity.getContentType())
                         .checksum(entity.getChecksum())
+                        .favorite(entity.isFavorite())
+                        .lastAccessedAt(entity.getLastAccessedAt())
                         .build())
                 .build();
+    }
+
+    /**
+     * Case-insensitive name/content search scoped to a workspace — backed by an indexed SQL
+     * {@code LIKE} ({@link FileRepository#searchByWorkspaceIdAndQuery}), the right tool at this
+     * data scale (a personal home-lab file store) rather than an in-memory tree walk or a
+     * search-engine-grade index. Content matching only ever applies to .txt/.md files (see
+     * {@link #TEXT_SEARCHABLE_EXTENSIONS}); everything else is matched by name alone.
+     */
+    public List<FileSearchResult> searchFiles(Long workspaceId, String query) {
+        var owner = userService.getMe();
+        workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
+
+        if (query == null || query.isBlank()) {
+            return List.of();
+        }
+
+        List<FileEntity> matches = fileRepository.searchByWorkspaceIdAndQuery(workspaceId, query.trim());
+
+        // Se necesita todo el árbol (no solo los matches) para poder reconstruir el breadcrumb de
+        // cada resultado caminando parentId hacia arriba — mismo patrón que getPersonalFolder.
+        Map<Long, FileEntity> byId = fileRepository.findByWorkspaceIdAndDeletedAtIsNull(workspaceId).stream()
+                .collect(Collectors.toMap(FileEntity::getId, f -> f));
+
+        return matches.stream()
+                .map(match -> FileSearchResult.builder()
+                        .id(match.getId().toString())
+                        .name(match.getName())
+                        .type(match.getType())
+                        .parentId(match.getParentId() != null ? match.getParentId().toString() : null)
+                        .path(buildBreadcrumb(match, byId))
+                        .build())
+                .toList();
+    }
+
+    private List<String> buildBreadcrumb(FileEntity node, Map<Long, FileEntity> byId) {
+        List<String> ancestors = new ArrayList<>();
+        Long parentId = node.getParentId();
+        while (parentId != null) {
+            FileEntity parent = byId.get(parentId);
+            if (parent == null) {
+                break;
+            }
+            ancestors.add(parent.getName());
+            parentId = parent.getParentId();
+        }
+        Collections.reverse(ancestors);
+        return ancestors;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public FileDTO setFavorite(Long id, boolean favorite) {
+        FileEntity entity = fileRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
+
+        verifyWriteAccess(entity, userService.getMe().id());
+
+        entity.setFavorite(favorite);
+        entity.setUpdatedAt(LocalDateTime.now());
+        fileRepository.save(entity);
+
+        return toResponseNode(entity);
+    }
+
+    public List<FileDTO> listFavorites(Long workspaceId) {
+        var owner = userService.getMe();
+        workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
+
+        return fileRepository.findByWorkspaceIdAndDeletedAtIsNullAndFavoriteTrue(workspaceId).stream()
+                .map(this::toResponseNode)
+                .toList();
+    }
+
+    /** Files ordered by most-recently-accessed first, excluding anything never actually opened
+     * (see {@link #downloadFile(Long)} for where lastAccessedAt is set). */
+    public List<FileDTO> listRecent(Long workspaceId, Integer limit) {
+        var owner = userService.getMe();
+        workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
+
+        Pageable pageable = PageRequest.of(0, limit != null && limit > 0 ? limit : DEFAULT_RECENT_LIMIT);
+        return fileRepository
+                .findByWorkspaceIdAndDeletedAtIsNullAndLastAccessedAtIsNotNullOrderByLastAccessedAtDesc(workspaceId, pageable)
+                .stream()
+                .map(this::toResponseNode)
+                .toList();
     }
 
     private Path validateWithinBasePath(Path path) {

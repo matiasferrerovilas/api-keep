@@ -57,6 +57,20 @@ public class FileEntity {
     @Column(name = "location")
     private String location;
 
+    /** Plain-text content extracted at upload time, for content search. Only populated for
+     * .txt/.md files — see {@link api.m2.file.service.FileService} for the scope decision. */
+    @Column(name = "content", columnDefinition = "TEXT")
+    private String content;
+
+    @Builder.Default
+    @Column(name = "is_favorite", nullable = false)
+    private boolean favorite = false;
+
+    /** Set only on actual download/open (see FileService#downloadFile), never on tree listing —
+     * so it reflects genuine access for the "Recientes" view. */
+    @Column(name = "last_accessed_at")
+    private LocalDateTime lastAccessedAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

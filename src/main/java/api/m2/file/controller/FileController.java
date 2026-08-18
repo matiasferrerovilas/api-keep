@@ -3,8 +3,10 @@ package api.m2.file.controller;
 import api.m2.file.record.CreateFolderRequest;
 import api.m2.file.record.DownloadableFile;
 import api.m2.file.record.FileDTO;
+import api.m2.file.record.FileSearchResult;
 import api.m2.file.record.MoveNodeRequest;
 import api.m2.file.record.RenameNodeRequest;
+import api.m2.file.record.SetFavoriteRequest;
 import api.m2.file.record.WorkspaceUsageResponse;
 import api.m2.file.service.FileService;
 
@@ -221,5 +223,74 @@ public class FileController {
     public WorkspaceUsageResponse getWorkspaceUsage(
             @Parameter(description = "ID del workspace") @RequestParam Long workspaceId) {
         return fileService.getWorkspaceUsage(workspaceId);
+    }
+
+    @Operation(
+            summary = "Buscar archivos y carpetas por nombre y contenido",
+            description = "Búsqueda case-insensitive (`LIKE '%query%'`) scopeada al workspace, contra el nombre de "
+                    + "cada archivo/carpeta y, para archivos de texto plano o Markdown (`.txt`/`.md`), contra su "
+                    + "contenido extraído en la subida. No se hace extracción de contenido para PDFs, imágenes u "
+                    + "otros binarios: eso requeriría una librería pesada (ej. Apache Tika) y está fuera de "
+                    + "alcance para este volumen de datos. Cada resultado incluye el breadcrumb de carpetas "
+                    + "ancestras para que el cliente pueda navegar directo sin resolver `parentId` a mano.",
+            responses = {
+                    @ApiResponse(
+                            responseCode = "200",
+                            description = "Resultados de la búsqueda (lista vacía si no hay matches o la query está vacía)",
+                            content = @Content(schema = @Schema(implementation = FileSearchResult.class))
+                    ),
+                    @ApiResponse(responseCode = "403", description = "El usuario no pertenece a ese workspace", content = @Content),
+            }
+    )
+    @GetMapping("/search")
+    public List<FileSearchResult> searchFiles(
+            @Parameter(description = "ID del workspace") @RequestParam Long workspaceId,
+            @Parameter(description = "Texto a buscar en el nombre y, si aplica, el contenido") @RequestParam String query) {
+        return fileService.searchFiles(workspaceId, query);
+    }
+
+    @Operation(
+            summary = "Marcar/desmarcar un archivo o carpeta como favorito",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Favorito actualizado correctamente"),
+                    @ApiResponse(responseCode = "403", description = "Sin permisos sobre el archivo/carpeta", content = @Content),
+                    @ApiResponse(responseCode = "404", description = "El archivo o carpeta no existe", content = @Content),
+            }
+    )
+    @PatchMapping("/{id}/favorite")
+    public FileDTO setFavorite(
+            @Parameter(description = "ID del archivo o carpeta") @PathVariable Long id,
+            @RequestBody SetFavoriteRequest request) {
+        return fileService.setFavorite(id, request.favorite());
+    }
+
+    @Operation(
+            summary = "Listar los favoritos del workspace",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Favoritos obtenidos correctamente"),
+                    @ApiResponse(responseCode = "403", description = "El usuario no pertenece a ese workspace", content = @Content),
+            }
+    )
+    @GetMapping("/favorites")
+    public List<FileDTO> listFavorites(@Parameter(description = "ID del workspace") @RequestParam Long workspaceId) {
+        return fileService.listFavorites(workspaceId);
+    }
+
+    @Operation(
+            summary = "Listar los archivos accedidos recientemente",
+            description = "Retorna archivos y carpetas del workspace ordenados por último acceso descendente. Un "
+                    + "nodo solo cuenta como \"accedido\" cuando efectivamente se descarga/abre (ver `GET /{id}/download`), "
+                    + "nunca por aparecer en el listado del árbol — los que nunca se abrieron quedan excluidos.",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Recientes obtenidos correctamente"),
+                    @ApiResponse(responseCode = "403", description = "El usuario no pertenece a ese workspace", content = @Content),
+            }
+    )
+    @GetMapping("/recent")
+    public List<FileDTO> listRecent(
+            @Parameter(description = "ID del workspace") @RequestParam Long workspaceId,
+            @Parameter(description = "Cantidad máxima de resultados (default 20)")
+            @RequestParam(required = false) Integer limit) {
+        return fileService.listRecent(workspaceId, limit);
     }
 }

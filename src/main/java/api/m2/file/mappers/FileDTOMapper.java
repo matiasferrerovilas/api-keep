@@ -40,6 +40,8 @@ public interface FileDTOMapper {
                         .type(file.getType())
                         .contentType(file.getContentType())
                         .checksum(file.getChecksum())
+                        .favorite(file.isFavorite())
+                        .lastAccessedAt(file.getLastAccessedAt())
                         .build())
                 .build();
     }

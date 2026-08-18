@@ -14,3 +14,9 @@ databaseChangeLog:
   - include:
       file: 005__add_files_deleted_at.sql
       relativeToChangelogFile: true
+  - include:
+      file: 006__add_file_search.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 007__add_file_favorites_and_recent.sql
+      relativeToChangelogFile: true

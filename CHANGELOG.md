@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-18
+
+### Added
+
+- `GET /v1/folders/search?workspaceId=&query=` — case-insensitive name search backed by an
+  indexed SQL `LIKE` (new `idx_files_workspace_id_name` composite index), scoped to the workspace.
+  Also matches against a new `content` column populated at upload time for `.txt`/`.md` files
+  only (plain-text extraction, no parsing library — PDFs/images/other binaries are explicitly out
+  of scope, would need something like Apache Tika). Each result includes a resolved breadcrumb
+  path so the client doesn't have to walk `parentId` itself.
+- Favorites: `is_favorite` boolean on `FileEntity`, `PATCH /v1/folders/{id}/favorite` to toggle,
+  `GET /v1/folders/favorites?workspaceId=` to list.
+- Recently-accessed tracking: `last_accessed_at` on `FileEntity`, updated only on an actual
+  download/open (`FileService#downloadFile`) — never on tree listing, so it reflects genuine
+  access. `GET /v1/folders/recent?workspaceId=&limit=` (default 20) lists non-null-access files
+  ordered by most recent first.
+- New indexes: `idx_files_workspace_id_name`, `idx_files_workspace_id_favorite`,
+  `idx_files_workspace_id_last_accessed_at`.
+
 ## [1.3.0] - 2026-08-18
 
 ### Added
@@ -41,5 +60,6 @@ Snapshot of the feature set prior to this changelog's introduction — see READM
 - Swagger/OpenAPI documentation.
 - Liquibase-managed database migrations.
 
+[1.4.0]: https://github.com/matiasferrerovilas/api-file-share/releases/tag/v1.4.0
 [1.3.0]: https://github.com/matiasferrerovilas/api-file-share/releases/tag/v1.3.0
 [1.2.1]: https://github.com/matiasferrerovilas/api-file-share/releases/tag/v1.2.1

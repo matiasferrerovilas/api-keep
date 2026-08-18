@@ -21,7 +21,9 @@ public record FileDTO(
             LocalDateTime createdAt,
             FileType type,
             String contentType,
-            String checksum
+            String checksum,
+            boolean favorite,
+            LocalDateTime lastAccessedAt
     ) {
     }
 }
