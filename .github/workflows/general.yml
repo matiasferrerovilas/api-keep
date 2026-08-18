@@ -107,6 +107,8 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     if: github.ref_name == 'main'
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
