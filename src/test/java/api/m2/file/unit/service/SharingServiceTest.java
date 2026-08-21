@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -59,7 +60,10 @@ class SharingServiceTest {
     void setUp() {
         sharingService = new SharingService(
                 fileShareRepository, fileRepository, userService, workspaceService, appFileShareMapper, fileShareEventPublisher);
-        when(userService.getMe()).thenReturn(owner);
+        // lenient: algunos tests (ej. revokeShare cuando el share/archivo no existe) tiran antes
+        // de llegar al chequeo de membresía, así que nunca invocan getMe() — sin esto, el strict
+        // stubbing de Mockito los marca como UnnecessaryStubbingException.
+        lenient().when(userService.getMe()).thenReturn(owner);
     }
 
     @Test
@@ -117,5 +121,39 @@ class SharingServiceTest {
         assertThat(shares).hasSize(1);
         assertThat(shares.getFirst().apiName()).isEqualTo("api-movements");
         verify(workspaceService).verifyUserIsMemberOfWorkspace(5L, 1L);
+    }
+
+    @Test
+    void revokeShare_deletesTheGrantAfterVerifyingMembership() {
+        var share = AppFileShare.builder().id(9L).fileId(1L).apiName("api-movements")
+                .permission(SharePermission.READ_WRITE).createdBy(1L).build();
+        when(fileShareRepository.findById(9L)).thenReturn(Optional.of(share));
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+
+        sharingService.revokeShare(9L);
+
+        verify(workspaceService).verifyUserIsMemberOfWorkspace(5L, 1L);
+        verify(fileShareRepository, times(1)).delete(share);
+    }
+
+    @Test
+    void revokeShare_throwsWhenTheShareDoesNotExist() {
+        when(fileShareRepository.findById(404L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sharingService.revokeShare(404L))
+                .isInstanceOf(EntityNotFoundException.class);
+        verify(fileShareRepository, never()).delete(any());
+    }
+
+    @Test
+    void revokeShare_throwsWhenTheUnderlyingFileNoLongerExists() {
+        var share = AppFileShare.builder().id(9L).fileId(404L).apiName("api-movements")
+                .permission(SharePermission.READ).createdBy(1L).build();
+        when(fileShareRepository.findById(9L)).thenReturn(Optional.of(share));
+        when(fileRepository.findById(404L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sharingService.revokeShare(9L))
+                .isInstanceOf(EntityNotFoundException.class);
+        verify(fileShareRepository, never()).delete(any());
     }
 }

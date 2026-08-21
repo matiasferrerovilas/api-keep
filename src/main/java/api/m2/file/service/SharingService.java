@@ -66,4 +66,17 @@ public class SharingService {
                 .map(appFileShareMapper::toResponse)
                 .toList();
     }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void revokeShare(Long shareId) {
+        AppFileShare share = fileShareRepository.findById(shareId)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el share con id " + shareId));
+
+        FileEntity file = fileRepository.findById(share.getFileId())
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + share.getFileId()));
+
+        workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), userService.getMe().id());
+
+        fileShareRepository.delete(share);
+    }
 }

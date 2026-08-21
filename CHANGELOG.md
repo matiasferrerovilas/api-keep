@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `DELETE /v1/shares/{id}` — revokes a file/folder share (`SharingService.revokeShare`). Previously
+  `SharingController` only had `POST` (create) and `GET` (list); once another app had `READ_WRITE`
+  on a file, the only way to take it back was editing the database by hand. Same permission check as
+  the other share endpoints (caller must belong to the file's workspace).
+
+### Changed
+- `FileService.searchFiles` no longer loads the entire workspace tree to build each result's
+  breadcrumb — it now resolves only the ancestor chain of the matched nodes, level by level
+  (`loadAncestors`, batched via `findAllById`, deduping shared ancestors across matches), instead of
+  `findByWorkspaceIdAndDeletedAtIsNull` over the whole workspace. Fine at home-lab scale either way,
+  but this scales with result-set depth instead of total file count.
+
+### Added
+- Workspace member invitations, mirroring api-movements: `POST /v1/workspace/{id}/invitations`
+  (send), `GET /v1/workspace/invitations` (list pending), `PATCH /v1/workspace/invitations/{id}`
+  (accept/reject), `DELETE /v1/workspace/{id}/members/{userId}` (remove a member), and
+  `DELETE /v1/workspace/{id}` (leave a workspace) — none of these existed before; api-keep only
+  proxied workspace creation and listing. New `WorkspaceInvitationDTO`/`WorkspaceSendInvitationDTO`/
+  `AcceptRejectInvitationDTO` records, `InvitationStatus` enum, and `WorkspaceMemberDTO.Metadata`
+  now includes `memberDetails` (userId/email/role per member), needed to target the remove-member
+  call. `UserSettingService` gained `deleteByKey`/`deleteByKeyForUser`, used to clear a user's
+  `DEFAULT_WORKSPACE` setting when they leave/get removed from it.
+- Live updates for the above: a new RabbitMQ consumer (`InvitationPublishServiceWebSocket`,
+  `WorkspaceMembershipPublishServiceWebSocket`) binds queues to api-identity's `identity.topic`
+  exchange (same exchange api-movements already consumes from) for `identity.invitation.sent`,
+  `identity.invitation.accepted`, and `identity.member.removed`, pushing each over the existing
+  STOMP broker at `/ws` so the frontend doesn't need to poll. New `EventType` values
+  (`INVITATION_ADDED`, `MEMBERSHIP_UPDATED`, `WORKSPACE_LEFT`) required adding a `default`-less
+  exhaustive-switch arm to the pre-existing `FileTreePublishServiceWebSocket`, since it shares the
+  same `EventType` enum with file-tree events.
+- Onboarding now calls api-identity's new `POST /v1/onboarding/start` when it needs to create a new
+  workspace, instead of two separate requests (`POST /v1/users` then `POST /v1/workspaces`) — closes
+  the window where a failure between the two calls could leave a user with no workspace. The
+  join-an-existing-workspace path (`existingDefaultWorkspaceId` set, no new workspace names) still
+  calls `IdentityClient.createLogInUser` alone, since there's nothing to make atomic with in that
+  case. `UserService.createLogInUser` renamed to `buildUserToAdd` and is now a pure builder with no
+  HTTP call; `WorkspaceService.createWorkspaces` (batch) removed, only reachable from the old
+  onboarding path.
+
 ## [1.4.0] - 2026-08-18
 
 ### Added

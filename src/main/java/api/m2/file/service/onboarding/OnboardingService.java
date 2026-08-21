@@ -2,13 +2,14 @@ package api.m2.file.service.onboarding;
 
 import api.m2.file.clients.identity.IdentityClient;
 import api.m2.file.clients.identity.requests.AddWorkspaceRecord;
+import api.m2.file.clients.identity.requests.OnboardingStartRequest;
+import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.clients.identity.response.WorkspaceAdded;
 import api.m2.file.enums.UserSettingKey;
 import api.m2.file.record.onboarding.OnBoardingForm;
 import api.m2.file.service.FileService;
 import api.m2.file.service.UserService;
 import api.m2.file.service.settings.UserSettingService;
-import api.m2.file.service.workspace.WorkspaceService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -27,14 +28,33 @@ public class OnboardingService {
     private final IdentityClient identityClient;
     private final FileService fileService;
     private final UserService userService;
-    private final WorkspaceService workspaceService;
     private final UserSettingService userSettingService;
 
     @Transactional(rollbackFor = Exception.class)
     public void finish(@Valid OnBoardingForm onBoardingForm) {
-        var owner = userService.createLogInUser();
+        var userToAdd = userService.buildUserToAdd();
 
-        Long defaultWorkspaceId = resolveDefaultWorkspaceId(onBoardingForm);
+        List<String> namesToCreate = onBoardingForm.workspacesToAdd() == null
+                ? List.of()
+                : onBoardingForm.workspacesToAdd().stream().filter(Objects::nonNull).toList();
+        boolean needsNewWorkspace = !namesToCreate.isEmpty() || onBoardingForm.existingDefaultWorkspaceId() == null;
+
+        UserMe owner;
+        List<WorkspaceAdded> created;
+        if (needsNewWorkspace) {
+            var workspacesToAdd = (namesToCreate.isEmpty() ? List.of(DEFAULT_WORKSPACE_NAME) : namesToCreate)
+                    .stream().map(AddWorkspaceRecord::new).toList();
+            var result = identityClient.startOnboarding(new OnboardingStartRequest(userToAdd, workspacesToAdd));
+            owner = result.user();
+            created = result.workspaces();
+        } else {
+            owner = identityClient.createLogInUser(userToAdd);
+            created = List.of();
+        }
+
+        Long defaultWorkspaceId = onBoardingForm.existingDefaultWorkspaceId() != null
+                ? onBoardingForm.existingDefaultWorkspaceId()
+                : created.getFirst().id();
 
         userSettingService.upsertForUser(owner.id(), UserSettingKey.DEFAULT_WORKSPACE, defaultWorkspaceId);
 
@@ -44,30 +64,6 @@ public class OnboardingService {
         }
 
         identityClient.changeUserFirstLoginStatus(owner.id());
-    }
-
-    private Long resolveDefaultWorkspaceId(OnBoardingForm onBoardingForm) {
-        List<String> namesToCreate = onBoardingForm.workspacesToAdd() == null
-                ? List.of()
-                : onBoardingForm.workspacesToAdd().stream().filter(Objects::nonNull).toList();
-
-        List<WorkspaceAdded> created = namesToCreate.isEmpty()
-                ? List.of()
-                : workspaceService.createWorkspaces(
-                        namesToCreate.stream().map(AddWorkspaceRecord::new).toList());
-
-        if (onBoardingForm.existingDefaultWorkspaceId() != null) {
-            return onBoardingForm.existingDefaultWorkspaceId();
-        }
-
-        if (!created.isEmpty()) {
-            return created.getFirst().id();
-        }
-
-        return workspaceService
-                .createWorkspaces(List.of(new AddWorkspaceRecord(DEFAULT_WORKSPACE_NAME)))
-                .getFirst()
-                .id();
     }
 
     public void markTourAsSeen() {

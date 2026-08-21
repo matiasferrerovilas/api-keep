@@ -1,11 +1,17 @@
 package api.m2.file.service.workspace;
 
 import api.m2.file.clients.identity.IdentityClient;
+import api.m2.file.clients.identity.requests.AcceptRejectInvitationDTO;
 import api.m2.file.clients.identity.requests.AddWorkspaceRecord;
-import api.m2.file.clients.identity.response.WorkspaceAdded;
+import api.m2.file.clients.identity.requests.WorkspaceSendInvitationDTO;
+import api.m2.file.clients.identity.response.WorkspaceInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceMemberDTO;
+import api.m2.file.enums.UserSettingKey;
 import api.m2.file.exceptions.BusinessException;
 import api.m2.file.exceptions.PermissionDeniedException;
+import api.m2.file.service.UserService;
+import api.m2.file.service.settings.UserSettingService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -19,6 +25,8 @@ import java.util.List;
 @Slf4j
 public class WorkspaceService {
     private final IdentityClient identityClient;
+    private final UserService userService;
+    private final UserSettingService userSettingService;
 
     public List<WorkspaceMemberDTO> getWorkspaces() {
         return identityClient.getWorkspaces();
@@ -40,7 +48,41 @@ public class WorkspaceService {
         identityClient.createWorkspaces(List.of(addWorkspaceRecord));
     }
 
-    public List<WorkspaceAdded> createWorkspaces(List<AddWorkspaceRecord> workspacesToAdd) {
-        return identityClient.createWorkspaces(workspacesToAdd);
+    @Transactional
+    public void leaveWorkspace(Long workspaceId) {
+        Long userId = userService.getMe().id();
+
+        identityClient.leaveWorkspace(workspaceId);
+
+        userSettingService.getDefaultWorkspaceId(userId)
+                .filter(workspaceId::equals)
+                .ifPresent(id -> userSettingService.deleteByKey(UserSettingKey.DEFAULT_WORKSPACE));
+
+        log.info("Workspace {} abandonado por el usuario {}", workspaceId, userId);
+    }
+
+    @Transactional
+    public void removeMember(Long workspaceId, Long targetUserId) {
+        identityClient.removeMember(workspaceId, targetUserId);
+
+        // Igual que leaveWorkspace: si el workspace del que se lo echó era el default del
+        // usuario removido, no lo dejamos apuntando a un workspace al que ya no pertenece.
+        userSettingService.getDefaultWorkspaceId(targetUserId)
+                .filter(workspaceId::equals)
+                .ifPresent(id -> userSettingService.deleteByKeyForUser(targetUserId, UserSettingKey.DEFAULT_WORKSPACE));
+
+        log.info("Miembro {} eliminado del workspace {}", targetUserId, workspaceId);
+    }
+
+    public List<WorkspaceInvitationDTO> getMyInvitations() {
+        return identityClient.getInvitations();
+    }
+
+    public void sendInvitation(Long workspaceId, @Valid WorkspaceSendInvitationDTO body) {
+        identityClient.sendInvitation(workspaceId, body);
+    }
+
+    public void acceptRejectInvitation(@Valid AcceptRejectInvitationDTO body) {
+        identityClient.acceptRejectInvitation(body);
     }
 }

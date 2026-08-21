@@ -25,8 +25,13 @@ public class UserService {
         return identityClient.getMe();
     }
 
-    @Transactional
-    public UserMe createLogInUser() {
+    /**
+     * Arma el payload de alta de usuario a partir del JWT autenticado, sin llamar todavía a
+     * identity — lo usa {@code OnboardingService.finish()} para combinarlo con la creación de
+     * workspaces en una sola llamada atómica ({@link IdentityClient#startOnboarding}), o para
+     * crear solo el usuario cuando el onboarding no crea workspaces nuevos (se une a uno existente).
+     */
+    public UserToAdd buildUserToAdd() {
         var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
 
         if (!(auth instanceof org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken jwtAuth)) {
@@ -38,14 +43,12 @@ public class UserService {
         String givenName = jwt.getClaimAsString(GIVEN_NAME_CLAIM);
         String familyName = jwt.getClaimAsString(FAMILY_NAME_CLAIM);
 
-        var user = UserToAdd.builder()
+        return UserToAdd.builder()
                 .email(email)
                 .givenName(givenName)
                 .familyName(familyName)
                 .isFirstLogin(true)
                 .userType(UserType.PERSONAL)
                 .build();
-
-        return identityClient.createLogInUser(user);
     }
 }

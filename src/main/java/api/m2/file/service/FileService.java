@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -654,11 +655,7 @@ public class FileService {
         }
 
         List<FileEntity> matches = fileRepository.searchByWorkspaceIdAndQuery(workspaceId, query.trim());
-
-        // Se necesita todo el árbol (no solo los matches) para poder reconstruir el breadcrumb de
-        // cada resultado caminando parentId hacia arriba — mismo patrón que getPersonalFolder.
-        Map<Long, FileEntity> byId = fileRepository.findByWorkspaceIdAndDeletedAtIsNull(workspaceId).stream()
-                .collect(Collectors.toMap(FileEntity::getId, f -> f));
+        Map<Long, FileEntity> byId = loadAncestors(matches);
 
         return matches.stream()
                 .map(match -> FileSearchResult.builder()
@@ -669,6 +666,31 @@ public class FileService {
                         .path(buildBreadcrumb(match, byId))
                         .build())
                 .toList();
+    }
+
+    /**
+     * Fetches only the ancestor chain of the given nodes, level by level, instead of loading the
+     * whole workspace tree — bounded by tree depth rather than total file count.
+     */
+    private Map<Long, FileEntity> loadAncestors(List<FileEntity> nodes) {
+        Map<Long, FileEntity> byId = new HashMap<>();
+        Set<Long> pendingIds = nodes.stream()
+                .map(FileEntity::getParentId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        while (!pendingIds.isEmpty()) {
+            List<FileEntity> fetched = fileRepository.findAllById(pendingIds);
+            fetched.forEach(f -> byId.put(f.getId(), f));
+
+            pendingIds = fetched.stream()
+                    .map(FileEntity::getParentId)
+                    .filter(Objects::nonNull)
+                    .filter(id -> !byId.containsKey(id))
+                    .collect(Collectors.toSet());
+        }
+
+        return byId;
     }
 
     private List<String> buildBreadcrumb(FileEntity node, Map<Long, FileEntity> byId) {

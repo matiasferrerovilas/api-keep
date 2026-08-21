@@ -24,6 +24,7 @@ import org.springframework.util.unit.DataSize;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -88,7 +89,8 @@ class FileSearchServiceTest {
         FileEntity match = fileAt(3L, "Vacaciones.txt", 2L, null);
 
         when(fileRepository.searchByWorkspaceIdAndQuery(5L, "Vacaciones")).thenReturn(List.of(match));
-        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(List.of(root, fotos, match));
+        when(fileRepository.findAllById(Set.of(2L))).thenReturn(List.of(fotos));
+        when(fileRepository.findAllById(Set.of(1L))).thenReturn(List.of(root));
 
         List<FileSearchResult> results = fileService.searchFiles(5L, "Vacaciones");
 
@@ -103,13 +105,34 @@ class FileSearchServiceTest {
     }
 
     @Test
+    void searchFiles_fetchesSharedAncestorOnceInsteadOfLoadingTheWholeTree() {
+        // Dos matches bajo la misma carpeta: loadAncestors no debe pedir el ancestro común "Fotos"
+        // dos veces, y nunca debe caer al patrón viejo de traer todo el árbol del workspace.
+        FileEntity root = folderAt(1L, "Home", null);
+        FileEntity fotos = folderAt(2L, "Fotos", 1L);
+        FileEntity vacaciones = fileAt(3L, "Vacaciones.txt", 2L, null);
+        FileEntity playa = fileAt(4L, "Playa.txt", 2L, null);
+
+        when(fileRepository.searchByWorkspaceIdAndQuery(5L, "20")).thenReturn(List.of(vacaciones, playa));
+        when(fileRepository.findAllById(Set.of(2L))).thenReturn(List.of(fotos));
+        when(fileRepository.findAllById(Set.of(1L))).thenReturn(List.of(root));
+
+        List<FileSearchResult> results = fileService.searchFiles(5L, "20");
+
+        assertThat(results).extracting(FileSearchResult::path)
+                .containsExactly(List.of("Home", "Fotos"), List.of("Home", "Fotos"));
+        verify(fileRepository).findAllById(Set.of(2L));
+        verify(fileRepository).findAllById(Set.of(1L));
+        verify(fileRepository, org.mockito.Mockito.never()).findByWorkspaceIdAndDeletedAtIsNull(anyLong());
+    }
+
+    @Test
     void searchFiles_matchesByNameCaseInsensitively() {
         // La query llega en mayúsculas mientras el nombre guardado está en minúsculas — el LIKE
         // case-insensitive del repositorio (lower(name) like lower(query)) es lo que hace que esto
         // matchee; acá se confirma que el service no filtra ese resultado por su cuenta.
         FileEntity match = fileAt(3L, "presupuesto.txt", null, null);
         when(fileRepository.searchByWorkspaceIdAndQuery(5L, "PRESUPUESTO")).thenReturn(List.of(match));
-        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(List.of(match));
 
         List<FileSearchResult> results = fileService.searchFiles(5L, "PRESUPUESTO");
 
@@ -122,7 +145,6 @@ class FileSearchServiceTest {
         // repositorio la matchea por el lado "content" del OR.
         FileEntity match = fileAt(3L, "notas.txt", null, "Reunión con el equipo de Contabilidad");
         when(fileRepository.searchByWorkspaceIdAndQuery(5L, "contabilidad")).thenReturn(List.of(match));
-        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(List.of(match));
 
         List<FileSearchResult> results = fileService.searchFiles(5L, "contabilidad");
 
@@ -132,7 +154,6 @@ class FileSearchServiceTest {
     @Test
     void searchFiles_returnsEmptyListWhenNothingMatches() {
         when(fileRepository.searchByWorkspaceIdAndQuery(5L, "inexistente")).thenReturn(List.of());
-        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(List.of());
 
         List<FileSearchResult> results = fileService.searchFiles(5L, "inexistente");
 
@@ -144,7 +165,6 @@ class FileSearchServiceTest {
         // Un PDF/imagen nunca tiene `content` poblado (fuera de alcance: requeriría Apache Tika o
         // similar), así que una query que solo matchearía contenido hipotético no lo trae.
         when(fileRepository.searchByWorkspaceIdAndQuery(5L, "cláusula de confidencialidad")).thenReturn(List.of());
-        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(List.of(fileAt(4L, "contrato.pdf", null, null)));
 
         List<FileSearchResult> results = fileService.searchFiles(5L, "cláusula de confidencialidad");
 

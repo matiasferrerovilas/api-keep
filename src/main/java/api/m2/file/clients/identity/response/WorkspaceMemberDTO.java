@@ -14,8 +14,12 @@ public record WorkspaceMemberDTO(
 
     public record Metadata(
             List<String> members,
+            List<MemberDetail> memberDetails,
             WorkspaceRole role,
             LocalDateTime joinedAt,
             Boolean isDefault) implements Serializable {
+    }
+
+    public record MemberDetail(Long userId, String email, WorkspaceRole role) implements Serializable {
     }
 }

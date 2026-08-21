@@ -28,6 +28,10 @@ public class FileTreePublishServiceWebSocket {
             case FILE_ADDED -> WebSocketTopics.filesNew(event.workspaceId());
             case FILE_UPDATED, FILE_SHARED -> WebSocketTopics.filesUpdate(event.workspaceId());
             case FILE_DELETED -> WebSocketTopics.filesDelete(event.workspaceId());
+            case INVITATION_ADDED, MEMBERSHIP_UPDATED, WORKSPACE_LEFT ->
+                    throw new IllegalStateException(
+                            "FileTreeChangedEvent nunca debería llevar un EventType de workspace/invitación: "
+                                    + event.eventType());
         };
         log.debug("Publicando cambio de árbol de archivos en {}", topic);
         messagingTemplate.convertAndSend(topic, new EventWrapper<>(event.eventType(), event.file()));

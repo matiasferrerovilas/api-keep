@@ -48,6 +48,17 @@ public class UserSettingService {
         userSettingRepository.upsertSetting(userId, key.name(), value);
     }
 
+    @Transactional
+    public void deleteByKey(UserSettingKey key) {
+        Long userId = userService.getMe().id();
+        userSettingRepository.deleteByUserIdAndSettingKey(userId, key);
+    }
+
+    @Transactional
+    public void deleteByKeyForUser(Long userId, UserSettingKey key) {
+        userSettingRepository.deleteByUserIdAndSettingKey(userId, key);
+    }
+
     public Optional<Long> getDefaultWorkspaceId(Long userId) {
         return userSettingRepository.findByUserIdAndSettingKey(userId, UserSettingKey.DEFAULT_WORKSPACE)
                 .map(UserSetting::getSettingValue);

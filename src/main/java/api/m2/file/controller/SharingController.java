@@ -11,7 +11,9 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -58,5 +60,21 @@ public class SharingController {
     public List<FileShareResponse> getShares(
             @Parameter(description = "ID del archivo o carpeta") @RequestParam Long fileId) {
         return sharingService.getShares(fileId);
+    }
+
+    @Operation(
+            summary = "Revocar un share",
+            description = "Elimina el acceso otorgado a una api sobre un archivo o carpeta. El caller debe "
+                    + "pertenecer al workspace del archivo.",
+            responses = {
+                    @ApiResponse(responseCode = "204", description = "Share revocado correctamente"),
+                    @ApiResponse(responseCode = "403", description = "El usuario no pertenece al workspace del archivo", content = @Content),
+                    @ApiResponse(responseCode = "404", description = "El share o el archivo no existen", content = @Content),
+            }
+    )
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void revokeShare(@Parameter(description = "ID del share") @PathVariable Long id) {
+        sharingService.revokeShare(id);
     }
 }
