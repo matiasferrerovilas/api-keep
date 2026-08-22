@@ -19,6 +19,12 @@ spring:
       host: localhost
       port: 6379
 
+app:
+  cors:
+    allowed-origins:
+      - http://localhost:5173
+      - http://localhost:8081
+
 logging:
   level:
     root: INFO

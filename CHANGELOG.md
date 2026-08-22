@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- CORS allowed origins moved out of `SecurityConfiguration.corsConfigurationSource()` and into
+  config (new `CorsProperties`, `@ConfigurationProperties(prefix = "app.cors")`, same pattern
+  already applied to api-identity and api-movements this round): `application.yaml` keeps the
+  current 3 origins as the dev/base default, `application-prod.yaml` now reads
+  `app.cors.allowed-origins` from the `CORS_ALLOWED_ORIGINS` env var instead of a fixed prod value
+  baked into the Java list. A self-hoster's own frontend origin no longer requires editing and
+  recompiling `SecurityConfiguration.java`.
+- Keep is now gated to `ROLE_ADMIN`/`ROLE_FAMILY` at the security-filter level — added
+  `.requestMatchers("/v1/**").hasAnyRole("ADMIN", "FAMILY")` in `SecurityConfiguration` (below the
+  existing `/v1/onboarding/**` matcher, which still allows `GUEST` through). A `GUEST` user hitting
+  any other endpoint now gets a 403 instead of a normal authenticated response — Keep never had a
+  concept of a `GUEST`-accessible workspace to begin with; fe-movements no longer shows the link to
+  Keep for that role either, and fe-keep's own route guards were tightened to match.
+
 ### Added
 - `DELETE /v1/shares/{id}` — revokes a file/folder share (`SharingService.revokeShare`). Previously
   `SharingController` only had `POST` (create) and `GET` (list); once another app had `READ_WRITE`

@@ -1,5 +1,6 @@
 package api.m2.file;
 
+import api.m2.file.configuration.properties.CorsProperties;
 import api.m2.file.configuration.properties.JwtProperties;
 import api.m2.file.configuration.properties.StorageProperties;
 import org.springframework.boot.SpringApplication;
@@ -11,7 +12,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @SpringBootApplication
 @EnableCaching
 @EnableScheduling
-@EnableConfigurationProperties({JwtProperties.class, StorageProperties.class})
+@EnableConfigurationProperties({JwtProperties.class, StorageProperties.class, CorsProperties.class})
 
 public class ApiKeepApplication {
 

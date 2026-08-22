@@ -1,5 +1,6 @@
 package api.m2.file.security;
 
+import api.m2.file.configuration.properties.CorsProperties;
 import api.m2.file.configuration.properties.JwtProperties;
 import lombok.AllArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -29,6 +30,7 @@ public class SecurityConfiguration {
 
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
     private final JwtProperties jwtProperties;
+    private final CorsProperties corsProperties;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) {
@@ -46,6 +48,9 @@ public class SecurityConfiguration {
                         .requestMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus", "/actuator/metrics").permitAll()
                         .requestMatchers("/actuator/**").hasRole("ADMIN")
                         .requestMatchers("/v1/onboarding/**").hasAnyRole("ADMIN", "FAMILY", "GUEST")
+                        // Keep es una feature de familia: un usuario GUEST no tiene workspace acá,
+                        // fe-movements ya no le muestra el link — el backend lo bloquea también.
+                        .requestMatchers("/v1/**").hasAnyRole("ADMIN", "FAMILY")
                         .anyRequest().authenticated())
                 .sessionManagement(sess -> sess.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .oauth2ResourceServer(oauth2 -> oauth2
@@ -56,11 +61,7 @@ public class SecurityConfiguration {
 
     private CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of(
-                "https://keep.eva-core.com",
-                "http://localhost:5173",
-                "http://localhost:8081"
-        ));
+        configuration.setAllowedOrigins(corsProperties.allowedOrigins());
 
         configuration.setAllowCredentials(true);
         configuration.setAllowedHeaders(List.of(
