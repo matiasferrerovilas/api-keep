@@ -1,0 +1,12 @@
+package api.m2.file.mappers;
+
+import api.m2.file.entity.UserFileShare;
+import api.m2.file.record.UserFileShareResponse;
+import org.mapstruct.Mapper;
+import org.mapstruct.ReportingPolicy;
+
+@Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
+public interface UserFileShareMapper {
+
+    UserFileShareResponse toResponse(UserFileShare share);
+}
