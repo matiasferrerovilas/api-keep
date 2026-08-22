@@ -28,7 +28,8 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/v1/shares/users")
-@Tag(name = "User Shares", description = "API para compartir archivos y carpetas con otra persona (por email), a diferencia de /v1/shares que comparte con otra app")
+@Tag(name = "User Shares", description = "API para compartir archivos y carpetas con otra persona (por email), "
+        + "a diferencia de /v1/shares que comparte con otra app")
 public class UserSharingController {
 
     private final UserSharingService userSharingService;
