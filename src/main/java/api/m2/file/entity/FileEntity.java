@@ -71,6 +71,15 @@ public class FileEntity {
     @Column(name = "last_accessed_at")
     private LocalDateTime lastAccessedAt;
 
+    /** Only meaningful for {@link api.m2.file.enums.FileType#FOLDER} rows — always null on files.
+     * Free-form values (hex color, icon key) validated client-side against a fixed palette/set;
+     * the backend doesn't constrain them beyond length, same as other display-only metadata. */
+    @Column(name = "folder_color", length = 16)
+    private String folderColor;
+
+    @Column(name = "folder_icon", length = 32)
+    private String folderIcon;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

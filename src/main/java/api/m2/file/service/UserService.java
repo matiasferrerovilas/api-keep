@@ -2,13 +2,16 @@ package api.m2.file.service;
 
 import api.m2.file.clients.identity.IdentityClient;
 import api.m2.file.clients.identity.requests.UserToAdd;
+import api.m2.file.clients.identity.response.UserLookupResponse;
 import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.enums.UserType;
+import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.exceptions.PermissionDeniedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestClientResponseException;
 
 @Service
 @Slf4j
@@ -23,6 +26,17 @@ public class UserService {
     @Transactional
     public UserMe getMe() {
         return identityClient.getMe();
+    }
+
+    /** Resolves an email to an existing user, for creating a user-to-user file share — fails
+     * loudly (unlike the workspace-invitation flow, which silently drops unmatched emails) so the
+     * sharer gets an honest "no account with that email" instead of a share that goes nowhere. */
+    public UserLookupResponse lookupUserByEmail(String email) {
+        try {
+            return identityClient.lookupUser(email);
+        } catch (RestClientResponseException e) {
+            throw new EntityNotFoundException("No existe ningún usuario con el email '" + email + "'");
+        }
     }
 
     /**

@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **File/folder activity log** — who uploaded, renamed, moved, deleted, restored, or (un)shared a
+  node, and when. New `FileActivity` entity (table `file_activity`, migration 010) and
+  `GET /v1/folders/{id}/activity` (`FileActivityResponse[]`, most recent first, gated by the same
+  `verifyReadAccess` as reading the file itself). Written explicitly at each call site
+  (`FileService.uploadFile/renameNode/moveNode/deleteNode/restoreNode`,
+  `SharingService.shareFile/revokeShare`, `UserSharingService.shareWithUser/revokeShare`) via a
+  new `FileActivityLogService.record(...)`, rather than derived from the existing
+  `FileTreeChangedEvent` — that event's `FILE_ADDED`/`FILE_UPDATED`/`FILE_DELETED` types are too
+  coarse to tell a move apart from a rename, or either from a favorite toggle, so this needed its
+  own explicit write path instead of "just" listening to what already publishes.
+- **User-to-user file/folder sharing**, with optional expiration — previously "compartir" only
+  meant app-to-app (`AppFileShare`, keyed by `apiName`); this is the first way to actually share
+  with another *person*. New `UserFileShare` entity (table `user_file_shares`, migration 009):
+  `file_id`, `shared_with_user_id`, `shared_with_email` (denormalized — api-keep has no local
+  users table to join against), `permission` (reuses `SharePermission`), `expires_at` (nullable,
+  `null` = never expires), `created_by`.
+  - `FileService.verifyAccess`'s existing fallback (native workspace membership → app share) gained
+    a third path: walk from the target file up through `parentId`, checking each ancestor
+    (inclusive) for a non-expired `UserFileShare` granting the required permission. This is what
+    makes sharing a folder cover everything inside it, including files added *after* the share was
+    created — nothing is precomputed, the check runs live against the tree as it currently is.
+  - New `POST/GET /v1/shares/users`, `DELETE /v1/shares/users/{id}` (`UserSharingController`/
+    `UserSharingService`, mirroring `SharingController`/`SharingService`) — creating a share
+    resolves the target by email via a new api-identity call (`IdentityClient.lookupUser`, backed
+    by api-identity's new `GET /v1/users/lookup`), 404s if no account matches.
+  - `GET /v1/shares/users/shared-with-me` — how a recipient discovers what's been shared with
+    them, since they're not necessarily a member of the owner's workspace and can't see the normal
+    tree. `GET /v1/folders/{id}/subtree` (`FileController`) — a nested `FileDTO` rooted at one
+    node, gated by the same share-aware `verifyReadAccess` instead of workspace-membership-only,
+    letting a recipient browse into a shared folder in the app rather than only downloading it as
+    a zip.
+  - `purgeExpiredUserShares()` (`@Scheduled`, hourly, same cadence as `purgeExpiredTrash()`) sweeps
+    expired grants.
+  - `FileDTO.Metadata` gained `sharedWithUserCount` (active grants only), populated the same
+    batch-map way `shareWith` already was — a lightweight signal for the owner's UI, the full
+    grantee list is fetched on demand.
+- Custom color/icon per folder: `FileEntity` gained `folder_color`/`folder_icon` (migration 008,
+  both nullable, only meaningful for `FileType.FOLDER` rows). New
+  `PATCH /v1/folders/{id}/customization` (`SetFolderCustomizationRequest{color,icon}`, both
+  independently nullable so sending `null` for one clears just that one) — 400s via
+  `BusinessException` if the target isn't a folder. Backend doesn't validate `color`/`icon` against
+  any fixed palette/set; that's left to the client, same as other free-form display metadata.
+
 ### Changed
 - CORS allowed origins moved out of `SecurityConfiguration.corsConfigurationSource()` and into
   config (new `CorsProperties`, `@ConfigurationProperties(prefix = "app.cors")`, same pattern

@@ -20,3 +20,12 @@ databaseChangeLog:
   - include:
       file: 007__add_file_favorites_and_recent.sql
       relativeToChangelogFile: true
+  - include:
+      file: 008__add_folder_customization.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 009__create_user_file_shares.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 010__create_file_activity.sql
+      relativeToChangelogFile: true

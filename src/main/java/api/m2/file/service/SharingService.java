@@ -2,6 +2,7 @@ package api.m2.file.service;
 
 import api.m2.file.entity.AppFileShare;
 import api.m2.file.entity.FileEntity;
+import api.m2.file.enums.FileActivityAction;
 import api.m2.file.events.FileSharedEvent;
 import api.m2.file.exceptions.EntityAlreadyExistsException;
 import api.m2.file.exceptions.EntityNotFoundException;
@@ -27,6 +28,7 @@ public class SharingService {
     private final WorkspaceService workspaceService;
     private final AppFileShareMapper appFileShareMapper;
     private final FileShareEventPublisher fileShareEventPublisher;
+    private final FileActivityLogService fileActivityLogService;
 
     @Transactional(rollbackFor = Exception.class)
     public FileShareResponse shareFile(CreateFileShareRequest request) {
@@ -52,6 +54,8 @@ public class SharingService {
 
         fileShareEventPublisher.publishFileShared(new FileSharedEvent(
                 file.getId(), file.getName(), share.getApiName(), share.getPermission(), owner.id()));
+        fileActivityLogService.record(file.getId(), file.getWorkspaceId(), FileActivityAction.SHARED,
+                file.getName(), owner.id(), owner.email(), "con la api '" + share.getApiName() + "'");
 
         return appFileShareMapper.toResponse(share);
     }
@@ -69,14 +73,17 @@ public class SharingService {
 
     @Transactional(rollbackFor = Exception.class)
     public void revokeShare(Long shareId) {
+        var actor = userService.getMe();
         AppFileShare share = fileShareRepository.findById(shareId)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el share con id " + shareId));
 
         FileEntity file = fileRepository.findById(share.getFileId())
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + share.getFileId()));
 
-        workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), userService.getMe().id());
+        workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), actor.id());
 
         fileShareRepository.delete(share);
+        fileActivityLogService.record(file.getId(), file.getWorkspaceId(), FileActivityAction.UNSHARED,
+                file.getName(), actor.id(), actor.email(), "con la api '" + share.getApiName() + "'");
     }
 }

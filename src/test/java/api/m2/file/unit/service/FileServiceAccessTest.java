@@ -4,12 +4,17 @@ import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.configuration.properties.StorageProperties;
 import api.m2.file.entity.AppFileShare;
 import api.m2.file.entity.FileEntity;
+import api.m2.file.entity.UserFileShare;
 import api.m2.file.enums.FileType;
 import api.m2.file.enums.SharePermission;
 import api.m2.file.exceptions.PermissionDeniedException;
 import api.m2.file.mappers.FileDTOMapper;
 import api.m2.file.repository.AppFileShareRepository;
+import api.m2.file.repository.UserFileShareRepository;
+import api.m2.file.repository.FileActivityRepository;
+import api.m2.file.mappers.FileActivityMapper;
 import api.m2.file.repository.FileRepository;
+import api.m2.file.service.FileActivityLogService;
 import api.m2.file.service.FileService;
 import api.m2.file.service.SourceAppResolver;
 import api.m2.file.service.UserService;
@@ -33,6 +38,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,6 +64,8 @@ class FileServiceAccessTest {
     @Mock
     AppFileShareRepository appFileShareRepository;
     @Mock
+    UserFileShareRepository userFileShareRepository;
+    @Mock
     UserService userService;
     @Mock
     WorkspaceService workspaceService;
@@ -65,6 +73,12 @@ class FileServiceAccessTest {
     FileDTOMapper fileDTOMapper;
     @Mock
     ApplicationEventPublisher eventPublisher;
+    @Mock
+    FileActivityRepository fileActivityRepository;
+    @Mock
+    FileActivityMapper fileActivityMapper;
+    @Mock
+    FileActivityLogService fileActivityLogService;
 
     @TempDir
     Path tempDir;
@@ -77,13 +91,17 @@ class FileServiceAccessTest {
         fileService = new FileService(
                 fileRepository,
                 appFileShareRepository,
+                userFileShareRepository,
                 storageProperties,
                 new LocalFsStorageAdapter(),
                 fileDTOMapper,
                 userService,
                 workspaceService,
                 new SourceAppResolver(),
-                eventPublisher);
+                eventPublisher,
+                fileActivityRepository,
+                fileActivityMapper,
+                fileActivityLogService);
         when(userService.getMe()).thenReturn(new UserMe(1L, "user@example.com", "Nombre", "Apellido", "PERSONAL", null));
     }
 
@@ -171,6 +189,97 @@ class FileServiceAccessTest {
         // the retention window passes.
         assertThat(file.getDeletedAt()).isNotNull();
         assertThat(Files.exists(Path.of(file.getLocation()))).isTrue();
+    }
+
+    @Test
+    void downloadFile_allowsReadWhenSharedDirectlyWithTheUser() {
+        FileEntity file = fileAt("doc.txt");
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        denyNativeMembership();
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(1L, 1L))
+                .thenReturn(Optional.of(userShareWith(1L, SharePermission.READ, null)));
+
+        var result = fileService.downloadFile(1L);
+
+        assertThat(result.filename()).isEqualTo("doc.txt");
+    }
+
+    @Test
+    void downloadFile_deniesReadWhenTheUserShareOnlyGrantsWrite() {
+        FileEntity file = fileAt("doc.txt");
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        denyNativeMembership();
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(1L, 1L))
+                .thenReturn(Optional.of(userShareWith(1L, SharePermission.WRITE, null)));
+
+        assertThatThrownBy(() -> fileService.downloadFile(1L))
+                .isInstanceOf(PermissionDeniedException.class);
+    }
+
+    @Test
+    void downloadFile_deniesReadWhenTheUserShareHasAlreadyExpired() {
+        FileEntity file = fileAt("doc.txt");
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        denyNativeMembership();
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(1L, 1L))
+                .thenReturn(Optional.of(userShareWith(1L, SharePermission.READ, LocalDateTime.now().minusDays(1))));
+
+        assertThatThrownBy(() -> fileService.downloadFile(1L))
+                .isInstanceOf(PermissionDeniedException.class);
+    }
+
+    @Test
+    void downloadFile_allowsReadWhenTheUserShareExpiresInTheFuture() {
+        FileEntity file = fileAt("doc.txt");
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        denyNativeMembership();
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(1L, 1L))
+                .thenReturn(Optional.of(userShareWith(1L, SharePermission.READ, LocalDateTime.now().plusDays(1))));
+
+        var result = fileService.downloadFile(1L);
+
+        assertThat(result.filename()).isEqualTo("doc.txt");
+    }
+
+    @Test
+    void downloadFile_cascadesAccessFromASharedAncestorFolderToAFileInsideIt() {
+        // file (id=1) has no share of its own; its parent folder (id=2) does — access must walk
+        // up from the file to find it. This is the mechanism that lets sharing a folder cover
+        // everything inside it, including files added to it after the share was created.
+        FileEntity file = fileAt("doc.txt"); // parentId = 2
+        FileEntity parentFolder = FileEntity.builder()
+                .id(2L).workspaceId(5L).parentId(null).name("Carpeta").type(FileType.FOLDER).build();
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(fileRepository.findById(2L)).thenReturn(Optional.of(parentFolder));
+        denyNativeMembership();
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(1L, 1L)).thenReturn(Optional.empty());
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(2L, 1L))
+                .thenReturn(Optional.of(userShareWith(2L, SharePermission.READ, null)));
+
+        var result = fileService.downloadFile(1L);
+
+        assertThat(result.filename()).isEqualTo("doc.txt");
+    }
+
+    @Test
+    void downloadFile_deniesAccessWhenNeitherTheFileNorAnyAncestorFolderIsShared() {
+        FileEntity file = fileAt("doc.txt"); // parentId = 2
+        FileEntity parentFolder = FileEntity.builder()
+                .id(2L).workspaceId(5L).parentId(null).name("Carpeta").type(FileType.FOLDER).build();
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(fileRepository.findById(2L)).thenReturn(Optional.of(parentFolder));
+        denyNativeMembership();
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(1L, 1L)).thenReturn(Optional.empty());
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(2L, 1L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> fileService.downloadFile(1L))
+                .isInstanceOf(PermissionDeniedException.class);
+    }
+
+    private UserFileShare userShareWith(Long fileId, SharePermission permission, LocalDateTime expiresAt) {
+        return UserFileShare.builder()
+                .id(9L).fileId(fileId).sharedWithUserId(1L).sharedWithEmail("user@example.com")
+                .permission(permission).expiresAt(expiresAt).createdBy(2L).build();
     }
 
     private FileEntity fileAt(String filename) {

@@ -3,6 +3,7 @@ package api.m2.file.unit.service;
 import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.entity.AppFileShare;
 import api.m2.file.entity.FileEntity;
+import api.m2.file.enums.FileActivityAction;
 import api.m2.file.enums.FileType;
 import api.m2.file.enums.SharePermission;
 import api.m2.file.exceptions.EntityAlreadyExistsException;
@@ -12,6 +13,7 @@ import api.m2.file.record.CreateFileShareRequest;
 import api.m2.file.record.FileShareResponse;
 import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.FileRepository;
+import api.m2.file.service.FileActivityLogService;
 import api.m2.file.service.FileShareEventPublisher;
 import api.m2.file.service.SharingService;
 import api.m2.file.service.UserService;
@@ -50,6 +52,8 @@ class SharingServiceTest {
     AppFileShareMapper appFileShareMapper;
     @Mock
     FileShareEventPublisher fileShareEventPublisher;
+    @Mock
+    FileActivityLogService fileActivityLogService;
 
     SharingService sharingService;
 
@@ -59,7 +63,8 @@ class SharingServiceTest {
     @BeforeEach
     void setUp() {
         sharingService = new SharingService(
-                fileShareRepository, fileRepository, userService, workspaceService, appFileShareMapper, fileShareEventPublisher);
+                fileShareRepository, fileRepository, userService, workspaceService, appFileShareMapper,
+                fileShareEventPublisher, fileActivityLogService);
         // lenient: algunos tests (ej. revokeShare cuando el share/archivo no existe) tiran antes
         // de llegar al chequeo de membresía, así que nunca invocan getMe() — sin esto, el strict
         // stubbing de Mockito los marca como UnnecessaryStubbingException.
@@ -85,6 +90,8 @@ class SharingServiceTest {
         verify(fileShareEventPublisher).publishFileShared(argThat(event ->
                 event.fileId().equals(1L) && event.apiName().equals("api-movements") && event.permission() == SharePermission.READ));
         verify(fileShareRepository, times(1)).save(any(AppFileShare.class));
+        verify(fileActivityLogService).record(1L, 5L, FileActivityAction.SHARED,
+                "doc.txt", 1L, "owner@example.com", "con la api 'api-movements'");
     }
 
     @Test
@@ -134,6 +141,8 @@ class SharingServiceTest {
 
         verify(workspaceService).verifyUserIsMemberOfWorkspace(5L, 1L);
         verify(fileShareRepository, times(1)).delete(share);
+        verify(fileActivityLogService).record(1L, 5L, FileActivityAction.UNSHARED,
+                "doc.txt", 1L, "owner@example.com", "con la api 'api-movements'");
     }
 
     @Test

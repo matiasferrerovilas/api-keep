@@ -8,7 +8,11 @@ import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.mappers.FileDTOMapper;
 import api.m2.file.record.FileDTO;
 import api.m2.file.repository.AppFileShareRepository;
+import api.m2.file.repository.UserFileShareRepository;
+import api.m2.file.repository.FileActivityRepository;
+import api.m2.file.mappers.FileActivityMapper;
 import api.m2.file.repository.FileRepository;
+import api.m2.file.service.FileActivityLogService;
 import api.m2.file.service.FileService;
 import api.m2.file.service.SourceAppResolver;
 import api.m2.file.service.UserService;
@@ -56,6 +60,8 @@ class FavoritesAndRecentTest {
     @Mock
     AppFileShareRepository appFileShareRepository;
     @Mock
+    UserFileShareRepository userFileShareRepository;
+    @Mock
     UserService userService;
     @Mock
     WorkspaceService workspaceService;
@@ -63,6 +69,12 @@ class FavoritesAndRecentTest {
     FileDTOMapper fileDTOMapper;
     @Mock
     ApplicationEventPublisher eventPublisher;
+    @Mock
+    FileActivityRepository fileActivityRepository;
+    @Mock
+    FileActivityMapper fileActivityMapper;
+    @Mock
+    FileActivityLogService fileActivityLogService;
 
     @TempDir
     Path tempDir;
@@ -75,13 +87,17 @@ class FavoritesAndRecentTest {
         fileService = new FileService(
                 fileRepository,
                 appFileShareRepository,
+                userFileShareRepository,
                 storageProperties,
                 new LocalFsStorageAdapter(),
                 fileDTOMapper,
                 userService,
                 workspaceService,
                 new SourceAppResolver(),
-                eventPublisher);
+                eventPublisher,
+                fileActivityRepository,
+                fileActivityMapper,
+                fileActivityLogService);
         when(userService.getMe()).thenReturn(new UserMe(1L, "user@example.com", "Nombre", "Apellido", "PERSONAL", null));
         doNothing().when(workspaceService).verifyUserIsMemberOfWorkspace(anyLong(), anyLong());
     }

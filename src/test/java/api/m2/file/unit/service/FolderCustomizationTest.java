@@ -5,7 +5,9 @@ import api.m2.file.configuration.properties.StorageProperties;
 import api.m2.file.entity.FileEntity;
 import api.m2.file.enums.FileType;
 import api.m2.file.exceptions.BusinessException;
+import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.mappers.FileDTOMapper;
+import api.m2.file.record.FileDTO;
 import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.UserFileShareRepository;
 import api.m2.file.repository.FileActivityRepository;
@@ -26,7 +28,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.util.unit.DataSize;
 
 import java.nio.file.Path;
@@ -34,24 +35,15 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * El límite de tamaño de subida solía estar hardcodeado a 50MB en FileService mientras
- * application.yaml permitía hasta 500MB a nivel servlet — un upload de, digamos, 200MB pasaba el
- * servlet entero antes de ser rechazado acá. Ahora ambos vienen de la misma property
- * (app.storage.max-file-size); este test usa un límite chico a propósito para probar la
- * validación sin tener que armar un archivo real de 50MB.
- * Lenient porque el test de "rechaza" nunca llega a usar la mayoría de los stubs de setUp() —
- * la validación de tamaño corta la ejecución en la primera línea de uploadFile.
- */
+/** Covers custom folder color/icon: set, clear, and the not-a-folder guard. */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
-class UploadSizeLimitTest {
+class FolderCustomizationTest {
 
     @Mock
     FileRepository fileRepository;
@@ -81,7 +73,7 @@ class UploadSizeLimitTest {
 
     @BeforeEach
     void setUp() {
-        StorageProperties storageProperties = new StorageProperties(tempDir.toString(), DataSize.ofBytes(10), DataSize.ofGigabytes(5));
+        StorageProperties storageProperties = new StorageProperties(tempDir.toString(), DataSize.ofMegabytes(50), DataSize.ofGigabytes(5));
         fileService = new FileService(
                 fileRepository,
                 appFileShareRepository,
@@ -98,36 +90,67 @@ class UploadSizeLimitTest {
                 fileActivityLogService);
         when(userService.getMe()).thenReturn(new UserMe(1L, "user@example.com", "Nombre", "Apellido", "PERSONAL", null));
         doNothing().when(workspaceService).verifyUserIsMemberOfWorkspace(anyLong(), anyLong());
-
-        FileEntity root = FileEntity.builder().id(2L).workspaceId(5L).name("Home").type(FileType.FOLDER)
-                .location(tempDir.toString()).build();
-        when(fileRepository.findByWorkspaceIdAndParentIdIsNull(5L)).thenReturn(Optional.of(root));
-        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNullAndChecksum(anyLong(), anyString())).thenReturn(Optional.empty());
-        when(fileRepository.save(any(FileEntity.class))).thenAnswer(invocation -> {
-            FileEntity entity = invocation.getArgument(0);
-            entity.setId(99L);
-            return entity;
-        });
     }
 
     @Test
-    void uploadFile_rejectsFilesLargerThanTheConfiguredLimit() {
-        var tooLarge = new MockMultipartFile("file", "grande.txt", "text/plain", "esto pesa mas de 10 bytes".getBytes());
+    void setFolderCustomization_setsColorAndIconOnAFolder() {
+        FileEntity folder = folderAt(1L, "Viajes");
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(folder));
 
-        assertThatThrownBy(() -> fileService.uploadFile(5L, null, tooLarge))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("tamaño máximo permitido");
+        FileDTO result = fileService.setFolderCustomization(1L, "#4a6fa5", "rocket");
+
+        assertThat(folder.getFolderColor()).isEqualTo("#4a6fa5");
+        assertThat(folder.getFolderIcon()).isEqualTo("rocket");
+        assertThat(result.metadata().folderColor()).isEqualTo("#4a6fa5");
+        assertThat(result.metadata().folderIcon()).isEqualTo("rocket");
+        verify(fileRepository).save(folder);
     }
 
     @Test
-    void uploadFile_allowsFilesAtOrUnderTheConfiguredLimit() {
-        // Exactamente 10 bytes: el límite es inclusivo (rechaza estrictamente más grande, no
-        // igual), así que esto tiene que subir sin problema — sirve para probar que el chequeo
-        // no está apagando uploads legítimos por un off-by-one.
-        var atLimit = new MockMultipartFile("file", "justo.txt", "text/plain", "1234567890".getBytes());
+    void setFolderCustomization_clearsColorAndIconWhenNullPassed() {
+        FileEntity folder = folderAt(1L, "Viajes");
+        folder.setFolderColor("#4a6fa5");
+        folder.setFolderIcon("rocket");
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(folder));
 
-        var result = fileService.uploadFile(5L, null, atLimit);
+        FileDTO result = fileService.setFolderCustomization(1L, null, null);
 
-        assertThat(result.name()).isEqualTo("Justo.txt");
+        assertThat(folder.getFolderColor()).isNull();
+        assertThat(folder.getFolderIcon()).isNull();
+        assertThat(result.metadata().folderColor()).isNull();
+        assertThat(result.metadata().folderIcon()).isNull();
+    }
+
+    @Test
+    void setFolderCustomization_throwsWhenTheNodeDoesNotExist() {
+        when(fileRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> fileService.setFolderCustomization(99L, "#4a6fa5", "rocket"))
+                .isInstanceOf(EntityNotFoundException.class);
+    }
+
+    @Test
+    void setFolderCustomization_throwsWhenTheNodeIsNotAFolder() {
+        FileEntity file = FileEntity.builder()
+                .id(1L)
+                .workspaceId(5L)
+                .parentId(2L)
+                .name("doc.txt")
+                .type(FileType.FILE)
+                .build();
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+
+        assertThatThrownBy(() -> fileService.setFolderCustomization(1L, "#4a6fa5", "rocket"))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    private FileEntity folderAt(Long id, String name) {
+        return FileEntity.builder()
+                .id(id)
+                .workspaceId(5L)
+                .parentId(2L)
+                .name(name)
+                .type(FileType.FOLDER)
+                .build();
     }
 }

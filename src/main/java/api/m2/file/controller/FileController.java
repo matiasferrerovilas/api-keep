@@ -2,11 +2,13 @@ package api.m2.file.controller;
 
 import api.m2.file.record.CreateFolderRequest;
 import api.m2.file.record.DownloadableFile;
+import api.m2.file.record.FileActivityResponse;
 import api.m2.file.record.FileDTO;
 import api.m2.file.record.FileSearchResult;
 import api.m2.file.record.MoveNodeRequest;
 import api.m2.file.record.RenameNodeRequest;
 import api.m2.file.record.SetFavoriteRequest;
+import api.m2.file.record.SetFolderCustomizationRequest;
 import api.m2.file.record.WorkspaceUsageResponse;
 import api.m2.file.service.FileService;
 
@@ -277,6 +279,24 @@ public class FileController {
     }
 
     @Operation(
+            summary = "Personalizar color/ícono de una carpeta",
+            description = "Solo aplica a carpetas. `color`/`icon` en null limpian ese valor puntual al default; "
+                    + "el backend no valida contra una paleta/set fijo, eso lo resuelve el cliente.",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Personalización actualizada correctamente"),
+                    @ApiResponse(responseCode = "400", description = "El id no corresponde a una carpeta", content = @Content),
+                    @ApiResponse(responseCode = "403", description = "Sin permisos sobre la carpeta", content = @Content),
+                    @ApiResponse(responseCode = "404", description = "La carpeta no existe", content = @Content),
+            }
+    )
+    @PatchMapping("/{id}/customization")
+    public FileDTO setFolderCustomization(
+            @Parameter(description = "ID de la carpeta") @PathVariable Long id,
+            @RequestBody SetFolderCustomizationRequest request) {
+        return fileService.setFolderCustomization(id, request.color(), request.icon());
+    }
+
+    @Operation(
             summary = "Listar los archivos accedidos recientemente",
             description = "Retorna archivos y carpetas del workspace ordenados por último acceso descendente. Un "
                     + "nodo solo cuenta como \"accedido\" cuando efectivamente se descarga/abre (ver `GET /{id}/download`), "
@@ -292,5 +312,38 @@ public class FileController {
             @Parameter(description = "Cantidad máxima de resultados (default 20)")
             @RequestParam(required = false) Integer limit) {
         return fileService.listRecent(workspaceId, limit);
+    }
+
+    @Operation(
+            summary = "Subárbol de una carpeta",
+            description = "Devuelve la carpeta indicada y todo su contenido anidado. A diferencia del árbol "
+                    + "completo del workspace, no exige que el caller sea miembro del workspace: alcanza con "
+                    + "que tenga acceso de lectura al nodo (por membresía o por un share con esa persona, "
+                    + "propio o de algún ancestro) — es lo que le permite a alguien con quien se compartió una "
+                    + "carpeta navegarla en la app sin pertenecer a ese workspace.",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Subárbol obtenido correctamente"),
+                    @ApiResponse(responseCode = "403", description = "Sin acceso de lectura a ese nodo", content = @Content),
+                    @ApiResponse(responseCode = "404", description = "El nodo no existe", content = @Content),
+            }
+    )
+    @GetMapping("/{id}/subtree")
+    public FileDTO getSubtree(@Parameter(description = "ID de la carpeta") @PathVariable Long id) {
+        return fileService.getSubtree(id);
+    }
+
+    @Operation(
+            summary = "Actividad de un archivo o carpeta",
+            description = "Quién lo subió, renombró, movió, eliminó, restauró o (des)compartió, y cuándo — más "
+                    + "reciente primero. Requiere el mismo acceso de lectura que ver el archivo en sí.",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Actividad obtenida correctamente"),
+                    @ApiResponse(responseCode = "403", description = "Sin acceso de lectura a ese nodo", content = @Content),
+                    @ApiResponse(responseCode = "404", description = "El nodo no existe", content = @Content),
+            }
+    )
+    @GetMapping("/{id}/activity")
+    public List<FileActivityResponse> getActivity(@Parameter(description = "ID del archivo o carpeta") @PathVariable Long id) {
+        return fileService.getActivity(id);
     }
 }

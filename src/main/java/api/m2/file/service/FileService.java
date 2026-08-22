@@ -4,7 +4,9 @@ import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.configuration.properties.StorageProperties;
 import api.m2.file.entity.AppFileShare;
 import api.m2.file.entity.FileEntity;
+import api.m2.file.entity.UserFileShare;
 import api.m2.file.enums.EventType;
+import api.m2.file.enums.FileActivityAction;
 import api.m2.file.enums.FileType;
 import api.m2.file.enums.SharePermission;
 import api.m2.file.exceptions.BusinessException;
@@ -12,14 +14,18 @@ import api.m2.file.exceptions.EntityAlreadyExistsException;
 import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.exceptions.PermissionDeniedException;
 import api.m2.file.exceptions.ServiceException;
+import api.m2.file.mappers.FileActivityMapper;
 import api.m2.file.mappers.FileDTOMapper;
 import api.m2.file.record.DownloadableFile;
+import api.m2.file.record.FileActivityResponse;
 import api.m2.file.record.FileDTO;
 import api.m2.file.record.FileSearchResult;
 import api.m2.file.record.WorkspaceUsageResponse;
 import api.m2.file.record.events.FileTreeChangedEvent;
 import api.m2.file.repository.AppFileShareRepository;
+import api.m2.file.repository.FileActivityRepository;
 import api.m2.file.repository.FileRepository;
+import api.m2.file.repository.UserFileShareRepository;
 import api.m2.file.service.storage.StorageAdapter;
 import api.m2.file.service.workspace.WorkspaceService;
 import lombok.RequiredArgsConstructor;
@@ -77,6 +83,7 @@ public class FileService {
 
     private final FileRepository fileRepository;
     private final AppFileShareRepository appFileShareRepository;
+    private final UserFileShareRepository userFileShareRepository;
     private final StorageProperties storageProperties;
     private final StorageAdapter storageAdapter;
     private final FileDTOMapper fileDTOMapper;
@@ -84,28 +91,65 @@ public class FileService {
     private final WorkspaceService workspaceService;
     private final SourceAppResolver sourceAppResolver;
     private final ApplicationEventPublisher eventPublisher;
+    private final FileActivityRepository fileActivityRepository;
+    private final FileActivityMapper fileActivityMapper;
+    private final FileActivityLogService fileActivityLogService;
 
     /**
-     * Native workspace membership is the normal path. When it fails, a caller from a different
-     * app (resolved from the JWT's app claim, not a client-supplied header) can still reach this
-     * exact file if it was explicitly shared with that app via {@link AppFileShare} at the
-     * required permission level. This is what makes "Compartir con" in fe-keep actually restrict
-     * anything — previously the permission was stored but nothing ever checked it.
+     * Native workspace membership is the normal path. When it fails, either of two fallbacks can
+     * still grant access to this exact operation:
+     *  - a caller from a different app (resolved from the JWT's app claim, not a client-supplied
+     *    header) if the file was explicitly shared with that app via {@link AppFileShare};
+     *  - a caller who is a person the file (or one of its ancestor folders) was shared with via
+     *    {@link UserFileShare}, and that grant hasn't expired.
+     * Neither fallback distinguishes "never shared" from "shared but expired/wrong permission" in
+     * its result — both just fall through to the same {@code PermissionDeniedException}, so a
+     * probing request can't tell the two apart.
      */
     private void verifyAccess(FileEntity file, Long userId, Set<SharePermission> permissionsGrantingAccess) {
         try {
             workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), userId);
         } catch (PermissionDeniedException nativeAccessDenied) {
-            boolean hasShareAccess = sourceAppResolver.resolveCallingApp()
+            boolean hasAppShareAccess = sourceAppResolver.resolveCallingApp()
                     .flatMap(callingApp -> appFileShareRepository.findByFileIdAndApiName(file.getId(), callingApp))
                     .map(AppFileShare::getPermission)
                     .filter(permissionsGrantingAccess::contains)
                     .isPresent();
 
-            if (!hasShareAccess) {
+            if (!hasAppShareAccess && !hasUserShareAccess(file, userId, permissionsGrantingAccess)) {
                 throw nativeAccessDenied;
             }
         }
+    }
+
+    /**
+     * Walks from {@code file} up through {@code parentId} (inclusive of {@code file} itself),
+     * checking each ancestor for a {@link UserFileShare} that grants {@code userId} one of
+     * {@code permissionsGrantingAccess} and hasn't expired. This is what makes sharing a folder
+     * cover everything inside it — including files added after the share was created, since
+     * nothing is precomputed, the walk just runs live against the tree as it currently is. A
+     * share found on one ancestor that's expired or the wrong permission doesn't stop the walk: a
+     * different ancestor further up could still grant access.
+     */
+    private boolean hasUserShareAccess(FileEntity file, Long userId, Set<SharePermission> permissionsGrantingAccess) {
+        LocalDateTime now = LocalDateTime.now();
+        FileEntity current = file;
+        while (current != null) {
+            boolean grantsAccess = userFileShareRepository.findByFileIdAndSharedWithUserId(current.getId(), userId)
+                    .filter(share -> share.getExpiresAt() == null || share.getExpiresAt().isAfter(now))
+                    .map(UserFileShare::getPermission)
+                    .filter(permissionsGrantingAccess::contains)
+                    .isPresent();
+
+            if (grantsAccess) {
+                return true;
+            }
+
+            current = current.getParentId() != null
+                    ? fileRepository.findById(current.getParentId()).orElse(null)
+                    : null;
+        }
+        return false;
     }
 
     private void verifyReadAccess(FileEntity file, Long userId) {
@@ -128,12 +172,38 @@ public class FileService {
                 .filter(file -> file.getParentId() != null)
                 .collect(Collectors.groupingBy(FileEntity::getParentId));
 
-        var shareWithByFileId = appFileShareRepository.findByFileIdIn(files.stream().map(FileEntity::getId).toList())
+        List<Long> allFileIds = files.stream().map(FileEntity::getId).toList();
+
+        var shareWithByFileId = appFileShareRepository.findByFileIdIn(allFileIds)
                 .stream()
                 .collect(Collectors.groupingBy(AppFileShare::getFileId,
                         Collectors.mapping(AppFileShare::getApiName, Collectors.toList())));
 
-        return fileDTOMapper.toFileDTO(root, childrenByParentId, shareWithByFileId);
+        LocalDateTime activeCutoff = LocalDateTime.now();
+        var sharedWithUserCountByFileId = userFileShareRepository.findByFileIdIn(allFileIds)
+                .stream()
+                .filter(share -> share.getExpiresAt() == null || share.getExpiresAt().isAfter(activeCutoff))
+                .collect(Collectors.groupingBy(UserFileShare::getFileId, Collectors.counting()));
+
+        return fileDTOMapper.toFileDTO(root, childrenByParentId, shareWithByFileId, sharedWithUserCountByFileId);
+    }
+
+    /**
+     * One nested {@link FileDTO} rooted at {@code id}, gated by {@link #verifyReadAccess} instead
+     * of workspace-membership-only — this is what lets a person who was shared a folder (but isn't
+     * a member of its workspace) browse into it in the app, not just download it as a zip. Reuses
+     * the same {@code childrenByParentId} map {@link #getPersonalFolder} builds for the whole
+     * workspace; the returned tree only ever follows {@code root}'s actual descendants, so a
+     * caller never sees siblings or anything else in the workspace they weren't granted.
+     */
+    public FileDTO getSubtree(Long id) {
+        FileEntity root = fileRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
+
+        verifyReadAccess(root, userService.getMe().id());
+
+        Map<Long, List<FileEntity>> childrenByParentId = childrenByParentId(root.getWorkspaceId());
+        return fileDTOMapper.toFileDTO(root, childrenByParentId, Map.of());
     }
 
     /** Total bytes currently used by the workspace (non-deleted files) against the configured
@@ -297,6 +367,8 @@ public class FileService {
 
         FileDTO response = toResponseNode(entity);
         eventPublisher.publishEvent(new FileTreeChangedEvent(workspaceId, EventType.FILE_ADDED, response));
+        fileActivityLogService.record(entity.getId(), workspaceId, FileActivityAction.UPLOADED,
+                entity.getName(), owner.id(), owner.email(), null);
         return response;
     }
 
@@ -386,15 +458,17 @@ public class FileService {
 
     @Transactional(rollbackFor = Exception.class)
     public FileDTO renameNode(Long id, String name) {
+        var actor = userService.getMe();
         FileEntity entity = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
 
-        verifyWriteAccess(entity, userService.getMe().id());
+        verifyWriteAccess(entity, actor.id());
 
         if (entity.getParentId() == null) {
             throw new BusinessException("No se puede renombrar la carpeta raíz");
         }
 
+        String oldName = entity.getName();
         String newName = Path.of(name).getFileName().toString();
         Path oldLocation = Path.of(entity.getLocation());
         Path newLocation = validateWithinBasePath(oldLocation.resolveSibling(newName));
@@ -422,6 +496,8 @@ public class FileService {
 
         FileDTO response = toResponseNode(entity);
         eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_UPDATED, response));
+        fileActivityLogService.record(entity.getId(), entity.getWorkspaceId(), FileActivityAction.RENAMED,
+                newName, actor.id(), actor.email(), "de '" + oldName + "'");
         return response;
     }
 
@@ -432,10 +508,11 @@ public class FileService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void deleteNode(Long id) {
+        var actor = userService.getMe();
         FileEntity entity = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
 
-        verifyWriteAccess(entity, userService.getMe().id());
+        verifyWriteAccess(entity, actor.id());
 
         if (entity.getParentId() == null) {
             throw new BusinessException("No se puede eliminar la carpeta raíz");
@@ -451,16 +528,19 @@ public class FileService {
 
         FileDTO deletedNode = FileDTO.builder().id(entity.getId().toString()).name(entity.getName()).build();
         eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_DELETED, deletedNode));
+        fileActivityLogService.record(entity.getId(), entity.getWorkspaceId(), FileActivityAction.DELETED,
+                entity.getName(), actor.id(), actor.email(), null);
     }
 
     /** Undoes {@link #deleteNode(Long)}: clears deletedAt on the node and whatever was trashed
      * alongside it, restoring the whole subtree together. */
     @Transactional(rollbackFor = Exception.class)
     public FileDTO restoreNode(Long id) {
+        var actor = userService.getMe();
         FileEntity entity = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
 
-        verifyWriteAccess(entity, userService.getMe().id());
+        verifyWriteAccess(entity, actor.id());
 
         if (entity.getDeletedAt() == null) {
             throw new BusinessException("El archivo no está en la papelera");
@@ -472,6 +552,8 @@ public class FileService {
 
         FileDTO response = toResponseNode(entity);
         eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_ADDED, response));
+        fileActivityLogService.record(entity.getId(), entity.getWorkspaceId(), FileActivityAction.RESTORED,
+                entity.getName(), actor.id(), actor.email(), null);
         return response;
     }
 
@@ -512,6 +594,29 @@ public class FileService {
             }
             fileRepository.delete(entity);
         }
+    }
+
+    /** Non-expired shares only — the count the owner's card UI shows should mean "this many
+     * people can currently see it," not include grants that lapsed but weren't purged yet. */
+    private int activeUserShareCount(Long fileId) {
+        LocalDateTime now = LocalDateTime.now();
+        return (int) userFileShareRepository.findByFileId(fileId).stream()
+                .filter(share -> share.getExpiresAt() == null || share.getExpiresAt().isAfter(now))
+                .count();
+    }
+
+    /** Sweeps user-file-shares whose expiration has passed — same cadence as
+     * {@link #purgeExpiredTrash()}. Unlike trash there's no disk state to clean up, just DB rows,
+     * so this is a straight batch delete. */
+    @Scheduled(fixedRate = 1, timeUnit = TimeUnit.HOURS)
+    @Transactional(rollbackFor = Exception.class)
+    public void purgeExpiredUserShares() {
+        List<UserFileShare> expired = userFileShareRepository.findByExpiresAtBefore(LocalDateTime.now());
+        if (expired.isEmpty()) {
+            return;
+        }
+        log.info("Purgando {} share(s) de usuario vencido(s)", expired.size());
+        userFileShareRepository.deleteAll(expired);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -566,6 +671,8 @@ public class FileService {
 
         FileDTO response = toResponseNode(entity);
         eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_UPDATED, response));
+        fileActivityLogService.record(entity.getId(), entity.getWorkspaceId(), FileActivityAction.MOVED,
+                entity.getName(), owner.id(), owner.email(), "a '" + newParent.getName() + "'");
         return response;
     }
 
@@ -635,6 +742,9 @@ public class FileService {
                         .checksum(entity.getChecksum())
                         .favorite(entity.isFavorite())
                         .lastAccessedAt(entity.getLastAccessedAt())
+                        .folderColor(entity.getFolderColor())
+                        .folderIcon(entity.getFolderIcon())
+                        .sharedWithUserCount(activeUserShareCount(entity.getId()))
                         .build())
                 .build();
     }
@@ -722,6 +832,28 @@ public class FileService {
         return toResponseNode(entity);
     }
 
+    /** Color/icon are display-only, so no validation against a palette/icon set here — that's a
+     * client-side concern, same as free-form names. Folder-only: files have nothing to show them
+     * on in the UI, so allowing it there would just be silently-ignored dead state. */
+    @Transactional(rollbackFor = Exception.class)
+    public FileDTO setFolderCustomization(Long id, String color, String icon) {
+        FileEntity entity = fileRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
+
+        if (entity.getType() != FileType.FOLDER) {
+            throw new BusinessException("Solo se puede personalizar color/ícono de una carpeta");
+        }
+
+        verifyWriteAccess(entity, userService.getMe().id());
+
+        entity.setFolderColor(color);
+        entity.setFolderIcon(icon);
+        entity.setUpdatedAt(LocalDateTime.now());
+        fileRepository.save(entity);
+
+        return toResponseNode(entity);
+    }
+
     public List<FileDTO> listFavorites(Long workspaceId) {
         var owner = userService.getMe();
         workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
@@ -742,6 +874,36 @@ public class FileService {
                 .findByWorkspaceIdAndDeletedAtIsNullAndLastAccessedAtIsNotNullOrderByLastAccessedAtDesc(workspaceId, pageable)
                 .stream()
                 .map(this::toResponseNode)
+                .toList();
+    }
+
+    /** Files/folders another person shared with the calling user, excluding anything expired —
+     * this is how a recipient discovers shared content in the first place, since they're not a
+     * workspace member and can't see the normal tree. Mirrors {@link #listFavorites(Long)}'s
+     * shape (a flat list via {@link #toResponseNode}), just scoped by grant instead of workspace. */
+    public List<FileDTO> listSharedWithMe() {
+        Long userId = userService.getMe().id();
+        List<UserFileShare> activeShares = userFileShareRepository.findActiveBySharedWithUserId(userId, LocalDateTime.now());
+
+        return activeShares.stream()
+                .map(share -> fileRepository.findById(share.getFileId()).orElse(null))
+                .filter(Objects::nonNull)
+                .map(this::toResponseNode)
+                .toList();
+    }
+
+    /** Timeline for one file/folder — who uploaded, renamed, moved, deleted, restored, or
+     * (un)shared it, most recent first. Gated the same as viewing the file itself: activity
+     * reveals who has interacted with it, so it shouldn't be visible to anyone who couldn't
+     * already read the file. */
+    public List<FileActivityResponse> getActivity(Long id) {
+        FileEntity entity = fileRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
+
+        verifyReadAccess(entity, userService.getMe().id());
+
+        return fileActivityRepository.findByFileIdOrderByCreatedAtDesc(id).stream()
+                .map(fileActivityMapper::toResponse)
                 .toList();
     }
 

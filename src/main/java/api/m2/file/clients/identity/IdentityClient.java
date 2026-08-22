@@ -6,12 +6,14 @@ import api.m2.file.clients.identity.requests.OnboardingStartRequest;
 import api.m2.file.clients.identity.requests.UserToAdd;
 import api.m2.file.clients.identity.requests.WorkspaceSendInvitationDTO;
 import api.m2.file.clients.identity.response.OnboardingStartResponse;
+import api.m2.file.clients.identity.response.UserLookupResponse;
 import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.clients.identity.response.WorkspaceAdded;
 import api.m2.file.clients.identity.response.WorkspaceInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceMemberDTO;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.service.annotation.DeleteExchange;
 import org.springframework.web.service.annotation.GetExchange;
 import org.springframework.web.service.annotation.HttpExchange;
@@ -35,6 +37,10 @@ public interface IdentityClient {
 
     @GetExchange("/v1/users/me")
     UserMe getMe();
+
+    /** 404s (translated by the caller) when no user exists with that email. */
+    @GetExchange("/v1/users/lookup")
+    UserLookupResponse lookupUser(@RequestParam String email);
 
     @PostExchange("/v1/workspaces")
     List<WorkspaceAdded> createWorkspaces(@RequestBody List<AddWorkspaceRecord> workspaces);

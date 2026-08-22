@@ -23,7 +23,12 @@ public record FileDTO(
             String contentType,
             String checksum,
             boolean favorite,
-            LocalDateTime lastAccessedAt
+            LocalDateTime lastAccessedAt,
+            String folderColor,
+            String folderIcon,
+            /** How many people (not apps) this node is currently shared with — just a signal for
+             * the owner's card UI, the full grantee list is fetched on demand when needed. */
+            int sharedWithUserCount
     ) {
     }
 }
