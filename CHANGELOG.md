@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Sharing (both app-to-app via `SharingService` and person-to-person via `UserSharingService`) is
+  now enforced as `ROLE_ADMIN`-only at the backend (`@PreAuthorize("hasRole('ADMIN')")` on
+  `shareFile`/`getShares`/`revokeShare` and `shareWithUser`/`getShares`/`updateShare`/
+  `revokeShare`), matching fe-keep's UI gate — previously the frontend hid the "Compartir" menu
+  from non-admins, but the endpoints themselves only checked workspace membership, so a FAMILY
+  member could call them directly (curl/Postman) and it worked. Does not restrict
+  `FileService.listSharedWithMe`/`getSubtree` — reading content already shared with you stays open
+  to any workspace role, otherwise sharing with a non-admin would be pointless. Added a
+  `AccessDeniedException` handler to `ErrorHandler` (was falling through to the generic 500
+  catch-all, not 403) since this is the first `@PreAuthorize` used anywhere in this codebase.
+
+### Added
+- `PATCH /v1/shares/users/{id}` — changes a user-share's permission and/or expiration in place.
+  Previously the only way to change either was `DELETE` + `POST`, which lost the share's identity
+  and creation history. Not a partial patch — same replace-wholesale contract as creating one
+  (`expiresAt: null` clears it). `UserSharingService.updateShare`, new
+  `UpdateUserFileShareRequest{permission, expiresAt}`.
+
+### Fixed
+- `UserSharingService.shareWithUser` never checked whether the resolved target email was the
+  caller's own — sharing a file with yourself created a pointless `UserFileShare` row that then
+  showed up in your own "Compartido conmigo" pointing at content you already own. Now rejected with
+  `BusinessException` (400).
+
 ### Added
 - **File/folder activity log** — who uploaded, renamed, moved, deleted, restored, or (un)shared a
   node, and when. New `FileActivity` entity (table `file_activity`, migration 010) and

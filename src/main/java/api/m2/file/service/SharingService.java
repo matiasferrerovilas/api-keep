@@ -13,11 +13,18 @@ import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.service.workspace.WorkspaceService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
+/** Compartir (con otra app o con otra persona) es una acción de administración del workspace —
+ * gestionado por {@code ROLE_ADMIN} únicamente, mismo criterio que ya aplicaba el frontend
+ * (fe-keep ocultaba el menú "Compartir" a no-admins) pero que el backend nunca verificaba: un
+ * FAMILY podía llamar estos endpoints directo. Nótese que esto NO cubre leer contenido ya
+ * compartido con vos ({@code getSharedWithMe}/subtree en FileService) — eso sigue abierto a
+ * cualquier miembro, si no compartir con un FAMILY sería inútil. */
 @Service
 @RequiredArgsConstructor
 public class SharingService {
@@ -30,6 +37,7 @@ public class SharingService {
     private final FileShareEventPublisher fileShareEventPublisher;
     private final FileActivityLogService fileActivityLogService;
 
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional(rollbackFor = Exception.class)
     public FileShareResponse shareFile(CreateFileShareRequest request) {
         var owner = userService.getMe();
@@ -60,6 +68,7 @@ public class SharingService {
         return appFileShareMapper.toResponse(share);
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     public List<FileShareResponse> getShares(Long fileId) {
         FileEntity file = fileRepository.findById(fileId)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + fileId));
@@ -71,6 +80,7 @@ public class SharingService {
                 .toList();
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional(rollbackFor = Exception.class)
     public void revokeShare(Long shareId) {
         var actor = userService.getMe();

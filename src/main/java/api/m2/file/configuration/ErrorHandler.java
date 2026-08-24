@@ -14,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -215,6 +216,25 @@ public class ErrorHandler extends ResponseEntityExceptionHandler {
         );
 
         return ResponseEntity.status(HttpStatus.CONFLICT)
+                .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .body(errorResponse);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDeniedException(AccessDeniedException ex) {
+        // Sin este handler explícito, un @PreAuthorize que rechaza (ej. hasRole('ADMIN') en
+        // UserSharingService/SharingService) caía en el catch-all genérico de más abajo y
+        // devolvía 500 en vez de 403 — el mismo tipo de error que causaba el fallo de permisos,
+        // no lo distinguía.
+        log.info("Access denied", ex);
+
+        var errorResponse = new ErrorResponse(
+                String.valueOf(HttpStatus.FORBIDDEN.value()),
+                "Permisos Insuficiente",
+                ex.getMessage() != null ? ex.getMessage() : "No tenés permisos para realizar esta acción"
+        );
+
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .body(errorResponse);
     }

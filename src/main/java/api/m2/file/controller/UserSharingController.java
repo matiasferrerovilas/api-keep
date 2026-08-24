@@ -2,6 +2,7 @@ package api.m2.file.controller;
 
 import api.m2.file.record.CreateUserFileShareRequest;
 import api.m2.file.record.FileDTO;
+import api.m2.file.record.UpdateUserFileShareRequest;
 import api.m2.file.record.UserFileShareResponse;
 import api.m2.file.service.FileService;
 import api.m2.file.service.UserSharingService;
@@ -15,6 +16,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -66,6 +68,24 @@ public class UserSharingController {
     public List<UserFileShareResponse> getShares(
             @Parameter(description = "ID del archivo o carpeta") @RequestParam Long fileId) {
         return userSharingService.getShares(fileId);
+    }
+
+    @Operation(
+            summary = "Cambiar el permiso o el vencimiento de un share existente",
+            description = "Reemplaza el permiso y el vencimiento del share tal como se mandan — no es un patch "
+                    + "parcial, es lo mismo que crearlo de nuevo pero preservando su identidad e historial en vez "
+                    + "de revocar y recrear. El caller debe pertenecer al workspace del archivo.",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Share actualizado correctamente"),
+                    @ApiResponse(responseCode = "403", description = "El usuario no pertenece al workspace del archivo", content = @Content),
+                    @ApiResponse(responseCode = "404", description = "El share o el archivo no existen", content = @Content),
+            }
+    )
+    @PatchMapping("/{id}")
+    public UserFileShareResponse updateShare(
+            @Parameter(description = "ID del share") @PathVariable Long id,
+            @Valid @RequestBody UpdateUserFileShareRequest request) {
+        return userSharingService.updateShare(id, request);
     }
 
     @Operation(

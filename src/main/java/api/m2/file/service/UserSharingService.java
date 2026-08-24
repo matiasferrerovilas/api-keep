@@ -3,22 +3,28 @@ package api.m2.file.service;
 import api.m2.file.entity.FileEntity;
 import api.m2.file.entity.UserFileShare;
 import api.m2.file.enums.FileActivityAction;
+import api.m2.file.exceptions.BusinessException;
 import api.m2.file.exceptions.EntityAlreadyExistsException;
 import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.mappers.UserFileShareMapper;
 import api.m2.file.record.CreateUserFileShareRequest;
+import api.m2.file.record.UpdateUserFileShareRequest;
 import api.m2.file.record.UserFileShareResponse;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.repository.UserFileShareRepository;
 import api.m2.file.service.workspace.WorkspaceService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
 /** CRUD for {@link UserFileShare} — sharing a file/folder with a specific person, as opposed to
- * {@link SharingService}, which shares with another app in the suite. */
+ * {@link SharingService}, which shares with another app in the suite. Managing shares (create/
+ * list-grantees/update/revoke) is {@code ROLE_ADMIN}-only, matching fe-keep's UI gate — this does
+ * NOT restrict {@code FileService.listSharedWithMe}/{@code getSubtree}, which is how a recipient
+ * (of any role) reads content already shared with them. */
 @Service
 @RequiredArgsConstructor
 public class UserSharingService {
@@ -30,6 +36,7 @@ public class UserSharingService {
     private final UserFileShareMapper userFileShareMapper;
     private final FileActivityLogService fileActivityLogService;
 
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional(rollbackFor = Exception.class)
     public UserFileShareResponse shareWithUser(CreateUserFileShareRequest request) {
         var owner = userService.getMe();
@@ -39,6 +46,10 @@ public class UserSharingService {
         workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), owner.id());
 
         var targetUser = userService.lookupUserByEmail(request.email());
+
+        if (targetUser.id().equals(owner.id())) {
+            throw new BusinessException("No podés compartir un archivo con vos mismo");
+        }
 
         if (userFileShareRepository.existsByFileIdAndSharedWithUserId(request.fileId(), targetUser.id())) {
             throw new EntityAlreadyExistsException(
@@ -61,6 +72,25 @@ public class UserSharingService {
         return userFileShareMapper.toResponse(share);
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
+    @Transactional(rollbackFor = Exception.class)
+    public UserFileShareResponse updateShare(Long shareId, UpdateUserFileShareRequest request) {
+        UserFileShare share = userFileShareRepository.findById(shareId)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el share con id " + shareId));
+
+        FileEntity file = fileRepository.findById(share.getFileId())
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + share.getFileId()));
+
+        workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), userService.getMe().id());
+
+        share.setPermission(request.permission());
+        share.setExpiresAt(request.expiresAt());
+        userFileShareRepository.save(share);
+
+        return userFileShareMapper.toResponse(share);
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
     public List<UserFileShareResponse> getShares(Long fileId) {
         FileEntity file = fileRepository.findById(fileId)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + fileId));
@@ -72,6 +102,7 @@ public class UserSharingService {
                 .toList();
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional(rollbackFor = Exception.class)
     public void revokeShare(Long shareId) {
         var actor = userService.getMe();

@@ -7,10 +7,12 @@ import api.m2.file.entity.UserFileShare;
 import api.m2.file.enums.FileActivityAction;
 import api.m2.file.enums.FileType;
 import api.m2.file.enums.SharePermission;
+import api.m2.file.exceptions.BusinessException;
 import api.m2.file.exceptions.EntityAlreadyExistsException;
 import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.mappers.UserFileShareMapper;
 import api.m2.file.record.CreateUserFileShareRequest;
+import api.m2.file.record.UpdateUserFileShareRequest;
 import api.m2.file.record.UserFileShareResponse;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.repository.UserFileShareRepository;
@@ -105,6 +107,19 @@ class UserSharingServiceTest {
     }
 
     @Test
+    void shareWithUser_rejectsSharingAFileWithYourself() {
+        var request = new CreateUserFileShareRequest(1L, "owner@example.com", SharePermission.READ, null);
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(userService.lookupUserByEmail("owner@example.com"))
+                .thenReturn(new UserLookupResponse(1L, "owner@example.com"));
+
+        assertThatThrownBy(() -> userSharingService.shareWithUser(request))
+                .isInstanceOf(BusinessException.class);
+        verify(userFileShareRepository, never()).save(any());
+        verify(userFileShareRepository, never()).existsByFileIdAndSharedWithUserId(any(), any());
+    }
+
+    @Test
     void shareWithUser_throwsWhenNoAccountMatchesTheEmail() {
         var request = new CreateUserFileShareRequest(1L, "nobody@example.com", SharePermission.READ, null);
         when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
@@ -140,6 +155,51 @@ class UserSharingServiceTest {
         UserFileShareResponse response = userSharingService.shareWithUser(request);
 
         assertThat(response.expiresAt()).isEqualTo(expiresAt);
+    }
+
+    @Test
+    void updateShare_replacesPermissionAndExpirationInPlace() {
+        var share = UserFileShare.builder().id(9L).fileId(1L).sharedWithUserId(42L)
+                .sharedWithEmail("friend@example.com").permission(SharePermission.READ).createdBy(1L).build();
+        LocalDateTime newExpiry = LocalDateTime.now().plusDays(30);
+        var request = new UpdateUserFileShareRequest(SharePermission.READ_WRITE, newExpiry);
+        when(userFileShareRepository.findById(9L)).thenReturn(Optional.of(share));
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(userFileShareMapper.toResponse(share)).thenAnswer(invocation ->
+                UserFileShareResponse.builder().id(share.getId()).permission(share.getPermission())
+                        .expiresAt(share.getExpiresAt()).build());
+
+        UserFileShareResponse response = userSharingService.updateShare(9L, request);
+
+        assertThat(response.permission()).isEqualTo(SharePermission.READ_WRITE);
+        assertThat(response.expiresAt()).isEqualTo(newExpiry);
+        verify(workspaceService).verifyUserIsMemberOfWorkspace(5L, 1L);
+        verify(userFileShareRepository, times(1)).save(share);
+        verify(userFileShareRepository, never()).delete(any());
+    }
+
+    @Test
+    void updateShare_clearsExpirationWhenSentAsNull() {
+        var share = UserFileShare.builder().id(9L).fileId(1L).sharedWithUserId(42L)
+                .sharedWithEmail("friend@example.com").permission(SharePermission.READ)
+                .expiresAt(LocalDateTime.now().plusDays(1)).createdBy(1L).build();
+        var request = new UpdateUserFileShareRequest(SharePermission.READ, null);
+        when(userFileShareRepository.findById(9L)).thenReturn(Optional.of(share));
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(userFileShareMapper.toResponse(share)).thenReturn(UserFileShareResponse.builder().build());
+
+        userSharingService.updateShare(9L, request);
+
+        assertThat(share.getExpiresAt()).isNull();
+    }
+
+    @Test
+    void updateShare_throwsWhenTheShareDoesNotExist() {
+        when(userFileShareRepository.findById(404L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> userSharingService.updateShare(404L, new UpdateUserFileShareRequest(SharePermission.READ, null)))
+                .isInstanceOf(EntityNotFoundException.class);
+        verify(userFileShareRepository, never()).save(any());
     }
 
     @Test
