@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Real-time notification (STOMP, same infra as file-tree/invitations) when a user-file-share is
+  created or is about to expire — previously `UserSharingService.shareWithUser` never published
+  anything, so the recipient only found out by opening "Compartido conmigo" and looking. New
+  `GET /topic/shares/users/{email}/new` topic, `UserFileShareEvent` record (carries an `eventType`
+  of `USER_FILE_SHARED` or `USER_FILE_SHARE_EXPIRING`), `UserSharePublishServiceWebSocket`.
+- `sendExpiringShareReminders()` (`FileService`, same hourly cadence as `purgeExpiredUserShares`)
+  publishes the expiring-share event once for each grant expiring within the next 24h — previously
+  neither the owner nor the recipient found out until access had already disappeared. New
+  `expiry_reminder_sent_at` column on `user_file_shares` (migration 011) tracks which grants have
+  already been reminded about, so the hourly job doesn't re-notify on every run; cleared by
+  `updateShare` whenever the expiration actually changes, so extending a share re-arms the
+  reminder for the new date.
+
 ### Security
 - Sharing (both app-to-app via `SharingService` and person-to-person via `UserSharingService`) is
   now enforced as `ROLE_ADMIN`-only at the backend (`@PreAuthorize("hasRole('ADMIN')")` on

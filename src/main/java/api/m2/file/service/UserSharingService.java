@@ -2,6 +2,7 @@ package api.m2.file.service;
 
 import api.m2.file.entity.FileEntity;
 import api.m2.file.entity.UserFileShare;
+import api.m2.file.enums.EventType;
 import api.m2.file.enums.FileActivityAction;
 import api.m2.file.exceptions.BusinessException;
 import api.m2.file.exceptions.EntityAlreadyExistsException;
@@ -10,15 +11,18 @@ import api.m2.file.mappers.UserFileShareMapper;
 import api.m2.file.record.CreateUserFileShareRequest;
 import api.m2.file.record.UpdateUserFileShareRequest;
 import api.m2.file.record.UserFileShareResponse;
+import api.m2.file.record.events.UserFileShareEvent;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.repository.UserFileShareRepository;
 import api.m2.file.service.workspace.WorkspaceService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Objects;
 
 /** CRUD for {@link UserFileShare} — sharing a file/folder with a specific person, as opposed to
  * {@link SharingService}, which shares with another app in the suite. Managing shares (create/
@@ -35,6 +39,7 @@ public class UserSharingService {
     private final WorkspaceService workspaceService;
     private final UserFileShareMapper userFileShareMapper;
     private final FileActivityLogService fileActivityLogService;
+    private final ApplicationEventPublisher eventPublisher;
 
     @PreAuthorize("hasRole('ADMIN')")
     @Transactional(rollbackFor = Exception.class)
@@ -68,6 +73,9 @@ public class UserSharingService {
         userFileShareRepository.save(share);
         fileActivityLogService.record(file.getId(), file.getWorkspaceId(), FileActivityAction.SHARED,
                 file.getName(), owner.id(), owner.email(), "con '" + targetUser.email() + "'");
+        eventPublisher.publishEvent(new UserFileShareEvent(
+                share.getId(), file.getId(), file.getName(), targetUser.email(), owner.email(),
+                share.getPermission(), share.getExpiresAt(), EventType.USER_FILE_SHARED));
 
         return userFileShareMapper.toResponse(share);
     }
@@ -84,6 +92,11 @@ public class UserSharingService {
         workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), userService.getMe().id());
 
         share.setPermission(request.permission());
+        if (!Objects.equals(share.getExpiresAt(), request.expiresAt())) {
+            // El vencimiento cambió — si ya se había mandado el aviso de "por vencer" para la
+            // fecha vieja, hay que poder mandarlo de nuevo para la nueva.
+            share.setExpiryReminderSentAt(null);
+        }
         share.setExpiresAt(request.expiresAt());
         userFileShareRepository.save(share);
 

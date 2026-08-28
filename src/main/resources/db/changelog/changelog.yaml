@@ -29,3 +29,6 @@ databaseChangeLog:
   - include:
       file: 010__create_file_activity.sql
       relativeToChangelogFile: true
+  - include:
+      file: 011__add_user_file_share_expiry_reminder.sql
+      relativeToChangelogFile: true

@@ -24,4 +24,8 @@ public interface UserFileShareRepository extends JpaRepository<UserFileShare, Lo
     List<UserFileShare> findActiveBySharedWithUserId(@Param("userId") Long userId, @Param("now") LocalDateTime now);
 
     List<UserFileShare> findByExpiresAtBefore(LocalDateTime cutoff);
+
+    /** Grants expiring within the given window that haven't been reminded about yet — see
+     * {@code FileService.sendExpiringShareReminders}. */
+    List<UserFileShare> findByExpiresAtBetweenAndExpiryReminderSentAtIsNull(LocalDateTime from, LocalDateTime to);
 }

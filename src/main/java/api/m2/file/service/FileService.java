@@ -22,6 +22,7 @@ import api.m2.file.record.FileDTO;
 import api.m2.file.record.FileSearchResult;
 import api.m2.file.record.WorkspaceUsageResponse;
 import api.m2.file.record.events.FileTreeChangedEvent;
+import api.m2.file.record.events.UserFileShareEvent;
 import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.FileActivityRepository;
 import api.m2.file.repository.FileRepository;
@@ -47,6 +48,7 @@ import java.nio.file.Path;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -80,6 +82,7 @@ public class FileService {
             EnumSet.of(SharePermission.READ, SharePermission.READ_WRITE);
     private static final Set<SharePermission> WRITE_GRANTING_PERMISSIONS =
             EnumSet.of(SharePermission.WRITE, SharePermission.READ_WRITE);
+    private static final Duration EXPIRING_SHARE_REMINDER_WINDOW = Duration.ofHours(24);
 
     private final FileRepository fileRepository;
     private final AppFileShareRepository appFileShareRepository;
@@ -617,6 +620,30 @@ public class FileService {
         }
         log.info("Purgando {} share(s) de usuario vencido(s)", expired.size());
         userFileShareRepository.deleteAll(expired);
+    }
+
+    /** Avisa un día antes de que un share por vencer expire — sin esto, ni el dueño ni el
+     * destinatario se enteraban hasta que {@link #purgeExpiredUserShares()} ya había revocado el
+     * acceso. Misma cadencia horaria que la purga; {@code expiryReminderSentAt} evita mandar el
+     * aviso más de una vez por share aunque el job corra varias veces dentro de la ventana. */
+    @Scheduled(fixedRate = 1, timeUnit = TimeUnit.HOURS)
+    @Transactional(rollbackFor = Exception.class)
+    public void sendExpiringShareReminders() {
+        LocalDateTime now = LocalDateTime.now();
+        List<UserFileShare> expiringSoon = userFileShareRepository
+                .findByExpiresAtBetweenAndExpiryReminderSentAtIsNull(now, now.plus(EXPIRING_SHARE_REMINDER_WINDOW));
+        if (expiringSoon.isEmpty()) {
+            return;
+        }
+        log.info("Avisando {} share(s) de usuario por vencer en las próximas 24hs", expiringSoon.size());
+        for (UserFileShare share : expiringSoon) {
+            fileRepository.findById(share.getFileId()).ifPresent(file ->
+                    eventPublisher.publishEvent(new UserFileShareEvent(
+                            share.getId(), file.getId(), file.getName(), share.getSharedWithEmail(), null,
+                            share.getPermission(), share.getExpiresAt(), EventType.USER_FILE_SHARE_EXPIRING)));
+            share.setExpiryReminderSentAt(now);
+        }
+        userFileShareRepository.saveAll(expiringSoon);
     }
 
     @Transactional(rollbackFor = Exception.class)

@@ -9,6 +9,7 @@ public final class WebSocketTopics {
     public static final String WORKSPACES = "/topic/workspace";
     public static final String INVITATIONS = "/topic/invitations";
     public static final String MEMBERSHIP = "/topic/membership";
+    public static final String USER_SHARES = "/topic/shares/users";
 
     private static final String NEW = "/new";
     private static final String UPDATE = "/update";
@@ -52,5 +53,15 @@ public final class WebSocketTopics {
      */
     public static String membershipRemoved(String removedUserEmail) {
         return MEMBERSHIP + "/" + removedUserEmail + REMOVE;
+    }
+
+    /**
+     * Topic de shares de usuario (creados o por vencer) recibidos por un usuario, direccionado
+     * por email igual que {@link #invitationsNew} — el destinatario de un share no
+     * necesariamente pertenece al workspace del archivo, así que no hay un workspaceId común
+     * para direccionar esto por workspace como se hace con los archivos.
+     */
+    public static String userSharesNew(String recipientEmail) {
+        return USER_SHARES + "/" + recipientEmail + NEW;
     }
 }

@@ -58,6 +58,13 @@ public class UserFileShare {
     @Column(name = "expires_at")
     private LocalDateTime expiresAt;
 
+    /** Set once the "about to expire" reminder fires for the current {@link #expiresAt}, so the
+     * hourly job doesn't send it again on every run. Cleared whenever {@link #expiresAt} changes
+     * (see {@code UserSharingService.updateShare}) so extending a share re-arms the reminder for
+     * the new date. */
+    @Column(name = "expiry_reminder_sent_at")
+    private LocalDateTime expiryReminderSentAt;
+
     @Column(name = "created_by", nullable = false)
     private Long createdBy;
 

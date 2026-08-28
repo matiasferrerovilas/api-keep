@@ -4,9 +4,11 @@ import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.configuration.properties.StorageProperties;
 import api.m2.file.entity.FileEntity;
 import api.m2.file.entity.UserFileShare;
+import api.m2.file.enums.EventType;
 import api.m2.file.enums.FileType;
 import api.m2.file.enums.SharePermission;
 import api.m2.file.mappers.FileDTOMapper;
+import api.m2.file.record.events.UserFileShareEvent;
 import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.repository.UserFileShareRepository;
@@ -144,6 +146,40 @@ class UserFileShareListingTest {
         fileService.purgeExpiredUserShares();
 
         verify(userFileShareRepository, never()).deleteAll(any());
+    }
+
+    @Test
+    void sendExpiringShareReminders_publishesAnEventAndMarksTheShareAsReminded() {
+        FileEntity sharedFile = fileAt(10L, "reporte.pdf");
+        UserFileShare expiringSoon = UserFileShare.builder().id(1L).fileId(10L).sharedWithUserId(1L)
+                .sharedWithEmail("friend@example.com").permission(SharePermission.READ)
+                .expiresAt(LocalDateTime.now().plusHours(12)).createdBy(2L).build();
+        when(userFileShareRepository.findByExpiresAtBetweenAndExpiryReminderSentAtIsNull(any(), any()))
+                .thenReturn(List.of(expiringSoon));
+        when(fileRepository.findById(10L)).thenReturn(Optional.of(sharedFile));
+
+        fileService.sendExpiringShareReminders();
+
+        ArgumentCaptor<UserFileShareEvent> captor = ArgumentCaptor.forClass(UserFileShareEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+        UserFileShareEvent event = captor.getValue();
+        assertThat(event.fileId()).isEqualTo(10L);
+        assertThat(event.fileName()).isEqualTo("reporte.pdf");
+        assertThat(event.sharedWithEmail()).isEqualTo("friend@example.com");
+        assertThat(event.eventType()).isEqualTo(EventType.USER_FILE_SHARE_EXPIRING);
+        assertThat(expiringSoon.getExpiryReminderSentAt()).isNotNull();
+        verify(userFileShareRepository).saveAll(List.of(expiringSoon));
+    }
+
+    @Test
+    void sendExpiringShareReminders_doesNothingWhenNothingIsExpiringSoon() {
+        when(userFileShareRepository.findByExpiresAtBetweenAndExpiryReminderSentAtIsNull(any(), any()))
+                .thenReturn(List.of());
+
+        fileService.sendExpiringShareReminders();
+
+        verify(eventPublisher, never()).publishEvent(any());
+        verify(userFileShareRepository, never()).saveAll(any());
     }
 
     private FileEntity fileAt(Long id, String filename) {

@@ -4,6 +4,7 @@ import api.m2.file.clients.identity.response.UserLookupResponse;
 import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.entity.FileEntity;
 import api.m2.file.entity.UserFileShare;
+import api.m2.file.enums.EventType;
 import api.m2.file.enums.FileActivityAction;
 import api.m2.file.enums.FileType;
 import api.m2.file.enums.SharePermission;
@@ -14,6 +15,7 @@ import api.m2.file.mappers.UserFileShareMapper;
 import api.m2.file.record.CreateUserFileShareRequest;
 import api.m2.file.record.UpdateUserFileShareRequest;
 import api.m2.file.record.UserFileShareResponse;
+import api.m2.file.record.events.UserFileShareEvent;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.repository.UserFileShareRepository;
 import api.m2.file.service.FileActivityLogService;
@@ -23,8 +25,10 @@ import api.m2.file.service.workspace.WorkspaceService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -54,6 +58,8 @@ class UserSharingServiceTest {
     UserFileShareMapper userFileShareMapper;
     @Mock
     FileActivityLogService fileActivityLogService;
+    @Mock
+    ApplicationEventPublisher eventPublisher;
 
     UserSharingService userSharingService;
 
@@ -64,7 +70,7 @@ class UserSharingServiceTest {
     void setUp() {
         userSharingService = new UserSharingService(
                 userFileShareRepository, fileRepository, userService, workspaceService, userFileShareMapper,
-                fileActivityLogService);
+                fileActivityLogService, eventPublisher);
         lenient().when(userService.getMe()).thenReturn(owner);
     }
 
@@ -91,6 +97,29 @@ class UserSharingServiceTest {
         verify(userFileShareRepository, times(1)).save(any(UserFileShare.class));
         verify(fileActivityLogService).record(1L, 5L, FileActivityAction.SHARED,
                 "doc.txt", 1L, "owner@example.com", "con 'friend@example.com'");
+    }
+
+    @Test
+    void shareWithUser_publishesAUserFileShareEventForTheRecipient() {
+        var request = new CreateUserFileShareRequest(1L, "friend@example.com", SharePermission.READ_WRITE, null);
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(userService.lookupUserByEmail("friend@example.com"))
+                .thenReturn(new UserLookupResponse(42L, "friend@example.com"));
+        when(userFileShareRepository.existsByFileIdAndSharedWithUserId(1L, 42L)).thenReturn(false);
+        when(userFileShareMapper.toResponse(any(UserFileShare.class)))
+                .thenReturn(UserFileShareResponse.builder().build());
+
+        userSharingService.shareWithUser(request);
+
+        var captor = ArgumentCaptor.forClass(UserFileShareEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+        UserFileShareEvent event = captor.getValue();
+        assertThat(event.fileId()).isEqualTo(1L);
+        assertThat(event.fileName()).isEqualTo("doc.txt");
+        assertThat(event.sharedWithEmail()).isEqualTo("friend@example.com");
+        assertThat(event.sharedByEmail()).isEqualTo("owner@example.com");
+        assertThat(event.permission()).isEqualTo(SharePermission.READ_WRITE);
+        assertThat(event.eventType()).isEqualTo(EventType.USER_FILE_SHARED);
     }
 
     @Test
@@ -191,6 +220,40 @@ class UserSharingServiceTest {
         userSharingService.updateShare(9L, request);
 
         assertThat(share.getExpiresAt()).isNull();
+    }
+
+    @Test
+    void updateShare_clearsTheExpiryReminderFlagWhenTheExpirationChanges() {
+        var oldExpiry = LocalDateTime.now().plusHours(6);
+        var share = UserFileShare.builder().id(9L).fileId(1L).sharedWithUserId(42L)
+                .sharedWithEmail("friend@example.com").permission(SharePermission.READ)
+                .expiresAt(oldExpiry).expiryReminderSentAt(LocalDateTime.now().minusHours(1)).createdBy(1L).build();
+        var newExpiry = LocalDateTime.now().plusDays(30);
+        var request = new UpdateUserFileShareRequest(SharePermission.READ, newExpiry);
+        when(userFileShareRepository.findById(9L)).thenReturn(Optional.of(share));
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(userFileShareMapper.toResponse(share)).thenReturn(UserFileShareResponse.builder().build());
+
+        userSharingService.updateShare(9L, request);
+
+        assertThat(share.getExpiryReminderSentAt()).isNull();
+    }
+
+    @Test
+    void updateShare_keepsTheExpiryReminderFlagWhenTheExpirationIsUnchanged() {
+        var expiry = LocalDateTime.now().plusHours(6);
+        var reminderSentAt = LocalDateTime.now().minusHours(1);
+        var share = UserFileShare.builder().id(9L).fileId(1L).sharedWithUserId(42L)
+                .sharedWithEmail("friend@example.com").permission(SharePermission.READ)
+                .expiresAt(expiry).expiryReminderSentAt(reminderSentAt).createdBy(1L).build();
+        var request = new UpdateUserFileShareRequest(SharePermission.READ_WRITE, expiry);
+        when(userFileShareRepository.findById(9L)).thenReturn(Optional.of(share));
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(userFileShareMapper.toResponse(share)).thenReturn(UserFileShareResponse.builder().build());
+
+        userSharingService.updateShare(9L, request);
+
+        assertThat(share.getExpiryReminderSentAt()).isEqualTo(reminderSentAt);
     }
 
     @Test
