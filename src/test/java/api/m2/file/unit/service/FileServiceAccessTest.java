@@ -276,6 +276,49 @@ class FileServiceAccessTest {
                 .isInstanceOf(PermissionDeniedException.class);
     }
 
+    @Test
+    void moveNode_deniesMovingToAFolderTheUserHasNoAccessTo() {
+        // The file itself is shared with WRITE, but the destination folder was never shared with
+        // this user — resolveParent only checks the destination belongs to the same workspace, so
+        // without an explicit access check on newParent this move would otherwise succeed.
+        FileEntity file = fileAt("doc.txt"); // workspaceId=5, parentId=2
+        FileEntity destinationFolder = FileEntity.builder()
+                .id(3L).workspaceId(5L).parentId(null).name("Otra carpeta").type(FileType.FOLDER)
+                .location(tempDir.resolve("otra-carpeta").toString()).build();
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(fileRepository.findById(3L)).thenReturn(Optional.of(destinationFolder));
+        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(java.util.List.of(file, destinationFolder));
+        denyNativeMembership();
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(1L, 1L))
+                .thenReturn(Optional.of(userShareWith(1L, SharePermission.WRITE, null)));
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(3L, 1L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> fileService.moveNode(1L, 3L))
+                .isInstanceOf(PermissionDeniedException.class);
+    }
+
+    @Test
+    void moveNode_allowsMovingToAFolderTheUserHasWriteAccessTo() throws IOException {
+        FileEntity file = fileAt("doc.txt"); // workspaceId=5, parentId=2
+        Path destinationPath = tempDir.resolve("otra-carpeta");
+        Files.createDirectory(destinationPath);
+        FileEntity destinationFolder = FileEntity.builder()
+                .id(3L).workspaceId(5L).parentId(null).name("Otra carpeta").type(FileType.FOLDER)
+                .location(destinationPath.toString()).build();
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+        when(fileRepository.findById(3L)).thenReturn(Optional.of(destinationFolder));
+        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNull(5L)).thenReturn(java.util.List.of(file, destinationFolder));
+        denyNativeMembership();
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(1L, 1L))
+                .thenReturn(Optional.of(userShareWith(1L, SharePermission.WRITE, null)));
+        when(userFileShareRepository.findByFileIdAndSharedWithUserId(3L, 1L))
+                .thenReturn(Optional.of(userShareWith(3L, SharePermission.WRITE, null)));
+
+        var result = fileService.moveNode(1L, 3L);
+
+        assertThat(result.name()).isEqualTo("doc.txt");
+    }
+
     private UserFileShare userShareWith(Long fileId, SharePermission permission, LocalDateTime expiresAt) {
         return UserFileShare.builder()
                 .id(9L).fileId(fileId).sharedWithUserId(1L).sharedWithEmail("user@example.com")

@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.util.Set;
 
 /**
  * Seam between {@link api.m2.file.service.FileService} and whatever actually stores the bytes.
@@ -43,9 +44,15 @@ public interface StorageAdapter {
     /** Streams the full content of the file at {@code location} to {@code output}. */
     void copyFileTo(String location, OutputStream output) throws IOException;
 
-    /** Streams a zip of the directory at {@code location} (recursively, entries relative to it,
-     * directories included as their own entries) to {@code output}. */
-    void zipDirectory(String location, OutputStream output) throws IOException;
+    /**
+     * Streams a zip of the directory at {@code location} (recursively, entries relative to it,
+     * directories included as their own entries) to {@code output}. Only paths present in
+     * {@code includedRelativePaths} (forward-slash-separated, relative to {@code location}) are
+     * added — this is what lets the caller (which knows the DB's {@code deletedAt} state; this
+     * interface never sees the DB) exclude a file that's still physically on disk but has already
+     * been sent to the trash, and hasn't been purged yet.
+     */
+    void zipDirectory(String location, Set<String> includedRelativePaths, OutputStream output) throws IOException;
 
     /** Best-effort MIME type sniff of the file at {@code location}; {@code null} if it can't be
      * determined. */

@@ -4,6 +4,7 @@ import api.m2.file.clients.identity.requests.AcceptRejectInvitationDTO;
 import api.m2.file.clients.identity.requests.AddWorkspaceRecord;
 import api.m2.file.clients.identity.requests.WorkspaceSendInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceInvitationDTO;
+import api.m2.file.clients.identity.response.WorkspaceSentInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceMemberDTO;
 import api.m2.file.service.workspace.WorkspaceService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -125,5 +126,31 @@ public class WorkspaceController {
     @ResponseStatus(HttpStatus.OK)
     public void acceptRejectInvitation(@PathVariable Long invitationId, @RequestBody AcceptRejectInvitationDTO invitationDTO) {
         workspaceService.acceptRejectInvitation(invitationDTO);
+    }
+
+    @Operation(
+            summary = "Listar invitaciones enviadas",
+            description = "Devuelve todas las invitaciones enviadas por el usuario autenticado, más reciente primero.",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Invitaciones obtenidas correctamente")
+            }
+    )
+    @GetMapping("/invitations/sent")
+    @ResponseStatus(HttpStatus.OK)
+    public List<WorkspaceSentInvitationDTO> getSentInvitations() {
+        return workspaceService.getSentInvitations();
+    }
+
+    @Operation(
+            summary = "Cancelar una invitación enviada",
+            description = "Cancela una invitación pendiente enviada por el usuario autenticado.",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "Invitación cancelada")
+            }
+    )
+    @DeleteMapping("/invitations/{invitationId}")
+    @ResponseStatus(HttpStatus.OK)
+    public void cancelInvitation(@PathVariable Long invitationId) {
+        workspaceService.cancelInvitation(invitationId);
     }
 }

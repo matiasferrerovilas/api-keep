@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -55,12 +56,15 @@ public class LocalFsStorageAdapter implements StorageAdapter {
     }
 
     @Override
-    public void zipDirectory(String location, OutputStream output) throws IOException {
+    public void zipDirectory(String location, Set<String> includedRelativePaths, OutputStream output) throws IOException {
         Path sourceDir = Path.of(location);
         try (ZipOutputStream zos = new ZipOutputStream(output);
              var stream = Files.walk(sourceDir)) {
             for (Path path : stream.filter(p -> !p.equals(sourceDir)).sorted().toList()) {
                 String entryName = sourceDir.relativize(path).toString().replace('\\', '/');
+                if (!includedRelativePaths.contains(entryName)) {
+                    continue;
+                }
                 if (Files.isDirectory(path)) {
                     zos.putNextEntry(new ZipEntry(entryName + "/"));
                     zos.closeEntry();

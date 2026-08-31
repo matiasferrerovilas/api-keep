@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-08-30
+
+### Fixed
+- Downloading a folder as a zip included files that were already in the trash (soft-deleted, still
+  physically on disk until `purgeExpiredTrash()`/`purgeNode()` actually removes them) — `zipDirectory`
+  walked the real filesystem with no idea of `deletedAt`, treating disk as the source of truth where
+  the rest of the domain treats the DB row as it. `StorageAdapter.zipDirectory` now takes the set of
+  relative paths to include (computed by `FileService` from the same non-deleted pool
+  `getPersonalFolder` uses), so it stays storage-agnostic while `FileService` keeps owning the "what
+  counts as existing" decision.
+- N+1 in `listTrash`/`listFavorites`/`listRecent`: each mapped every result through
+  `toResponseNode`, which ran its own `userFileShareRepository.findByFileId` query per file just to
+  count active shares — the same batching `getPersonalFolder` already did (`findByFileIdIn`, grouped
+  once) had never been applied to these three sibling endpoints. New `toResponseNodes(List)` does the
+  batch lookup once per call instead of once per row.
+
 ### Added
+- `DELETE /v1/files/{id}/purge` — permanently deletes a single trashed node (and its whole subtree,
+  for a folder) right now, instead of waiting for the next-day `purgeExpiredTrash()` sweep.
+  Previously `restoreNode`/the automatic sweep were the only ways out of the papelera, so there was
+  no lever to reclaim disk space on demand. fe-keep: a per-row "Eliminar ahora" button in the trash
+  list, a bulk "Eliminar ahora" action on multi-select, and a top-level "Vaciar papelera" button
+  that purges everything currently in the trash — each behind its own confirmation dialog.
+- `GET /v1/workspace/invitations/sent` and `DELETE /v1/workspace/invitations/{invitationId}` proxy
+  api-identity's new sent-invitations endpoints (`IdentityClient.getSentInvitations`/
+  `cancelInvitation`), so a workspace owner/collaborator can list invitations they sent and cancel a
+  still-pending one before the recipient responds.
 - Real-time notification (STOMP, same infra as file-tree/invitations) when a user-file-share is
   created or is about to expire — previously `UserSharingService.shareWithUser` never published
   anything, so the recipient only found out by opening "Compartido conmigo" and looking. New
@@ -22,6 +48,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reminder for the new date.
 
 ### Security
+- `/ws/**` was (and stays) `permitAll()` at the HTTP layer — required for SockJS's handshake/XHR
+  fallback requests, which aren't the STOMP CONNECT frame itself — but nothing validated the STOMP
+  frames flowing over the resulting session: no `ChannelInterceptor` checked CONNECT or SUBSCRIBE at
+  all. Topics are addressed by workspace id or by another user's email in plain text
+  (`/topic/files/{workspaceId}/new`, `/topic/shares/users/{email}/new`), so any client that opened
+  the SockJS connection — authenticated or not — could subscribe to any topic and passively harvest
+  file names, shares, and invitations from any workspace. Same "the frontend hides it but the
+  backend doesn't validate it" pattern already closed for sharing this round, still open here. New
+  `StompAuthChannelInterceptor` on the client-inbound channel: CONNECT now requires a valid Bearer
+  JWT (same `JwtDecoder`/`JwtAuthenticationConverter` beans the HTTP filter chain already uses — the
+  three frontends already send `Authorization: Bearer <token>` as a STOMP connect header, so no
+  client-side change was needed), and every SUBSCRIBE is checked against the connected user before
+  being allowed through — a workspace-scoped topic requires membership (verified against
+  api-identity), an email-scoped topic requires the destination email to match the caller's own. A
+  destination matching none of the known topic shapes is rejected by default rather than let
+  through.
+- `moveNode` only checked `verifyWriteAccess` on the node being moved — `resolveParent` validated
+  that the destination belonged to the same workspace, but never that the caller actually had
+  access to that specific folder. Someone holding only a `UserFileShare` write grant on a single
+  file could relocate it into any folder in the workspace, including ones never shared with them.
+  Now `moveNode` also calls `verifyWriteAccess` on the resolved destination folder before moving.
 - Sharing (both app-to-app via `SharingService` and person-to-person via `UserSharingService`) is
   now enforced as `ROLE_ADMIN`-only at the backend (`@PreAuthorize("hasRole('ADMIN')")` on
   `shareFile`/`getShares`/`revokeShare` and `shareWithUser`/`getShares`/`updateShare`/
@@ -91,6 +138,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any fixed palette/set; that's left to the client, same as other free-form display metadata.
 
 ### Changed
+- New `FileMembershipGuard.requireFileWithMembership` collapses the `fileRepository.findById(id)
+  .orElseThrow(...)` + `workspaceService.verifyUserIsMemberOfWorkspace(...)` pair that was
+  copy-pasted at every call site in `SharingService` and `UserSharingService` (7 sites total). New
+  `FileService` private helpers `requireFileWithReadAccess`/`requireFileWithWriteAccess` do the same
+  for the fuller `verifyReadAccess`/`verifyWriteAccess` pattern duplicated across 9 of its own call
+  sites (uploadFile/renameNode/deleteNode/restoreNode/purgeNode/moveNode/setFavorite/
+  setFolderCustomization/getActivity/getSubtree/downloadFile). Pure refactor — same checks, same
+  exceptions, ~50 fewer duplicated lines; `setFolderCustomization` now checks access before the
+  "not a folder" business check instead of after, so a caller without access can no longer learn a
+  node's type before being told they can't touch it.
+- Removed the unused `spring-boot-starter-oauth2-authorization-server` and
+  `spring-boot-starter-security-oauth2-client` Gradle dependencies — this service only ever acts as
+  an OAuth2 resource server validating Keycloak JWTs, never issues tokens, and is never itself an
+  OAuth2 client. Both classes were dead classpath/native-image weight; the actual resource-server
+  classes in use (`JwtDecoder`, `NimbusJwtDecoder`, `.oauth2ResourceServer()`) were only reachable
+  as a transitive dependency of the authorization-server starter, which no longer holds — replaced
+  with the correct, minimal `spring-boot-starter-oauth2-resource-server` declared directly.
 - CORS allowed origins moved out of `SecurityConfiguration.corsConfigurationSource()` and into
   config (new `CorsProperties`, `@ConfigurationProperties(prefix = "app.cors")`, same pattern
   already applied to api-identity and api-movements this round): `application.yaml` keeps the

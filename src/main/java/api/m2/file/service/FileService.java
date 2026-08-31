@@ -163,6 +163,25 @@ public class FileService {
         verifyAccess(file, userId, WRITE_GRANTING_PERMISSIONS);
     }
 
+    /** {@code fileRepository.findById(id).orElseThrow(...)} + {@link #verifyReadAccess} — this
+     * exact pair used to be copy-pasted at every read-only call site below, each with its own
+     * 404 message wording. */
+    private FileEntity requireFileWithReadAccess(Long id, Long userId) {
+        FileEntity file = fileRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
+        verifyReadAccess(file, userId);
+        return file;
+    }
+
+    /** Same as {@link #requireFileWithReadAccess}, but for the mutating call sites that need
+     * {@link #verifyWriteAccess} instead. */
+    private FileEntity requireFileWithWriteAccess(Long id, Long userId) {
+        FileEntity file = fileRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
+        verifyWriteAccess(file, userId);
+        return file;
+    }
+
     public FileDTO getPersonalFolder(Long workspaceId) {
         var owner = userService.getMe();
         workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
@@ -200,10 +219,7 @@ public class FileService {
      * caller never sees siblings or anything else in the workspace they weren't granted.
      */
     public FileDTO getSubtree(Long id) {
-        FileEntity root = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
-
-        verifyReadAccess(root, userService.getMe().id());
+        FileEntity root = requireFileWithReadAccess(id, userService.getMe().id());
 
         Map<Long, List<FileEntity>> childrenByParentId = childrenByParentId(root.getWorkspaceId());
         return fileDTOMapper.toFileDTO(root, childrenByParentId, Map.of());
@@ -241,10 +257,7 @@ public class FileService {
 
 
     public DownloadableFile downloadFile(Long id) {
-        FileEntity file = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
-
-        verifyReadAccess(file, userService.getMe().id());
+        FileEntity file = requireFileWithReadAccess(id, userService.getMe().id());
 
         Path location = validateWithinBasePath(Path.of(file.getLocation()));
 
@@ -272,12 +285,27 @@ public class FileService {
                 .build();
     }
 
+    /**
+     * The disk still holds a trashed file's bytes until {@link #purgeExpiredTrash()} sweeps it up
+     * (or a user purges it early via {@link #purgeNode(Long)}) — the domain's source of truth for
+     * "does this file still exist" is {@code deletedAt} in the DB, not disk presence. Without this,
+     * zipping a folder in that window silently included anything sitting in the trash underneath
+     * it. Computed from the same non-deleted pool {@link #getPersonalFolder} uses, so a trashed
+     * subfolder (and everything under it) is excluded the same way it would be from the tree.
+     */
     private DownloadableFile downloadFolder(FileEntity folder, Path location) {
         if (!storageAdapter.isDirectory(location.toString())) {
             throw new EntityNotFoundException("La carpeta no existe en el disco: " + location);
         }
 
-        StreamingResponseBody body = out -> storageAdapter.zipDirectory(location.toString(), out);
+        Set<String> includedRelativePaths = collectSubtree(
+                        folder, fileRepository.findByWorkspaceIdAndDeletedAtIsNull(folder.getWorkspaceId()))
+                .stream()
+                .filter(node -> !node.getId().equals(folder.getId()))
+                .map(node -> location.relativize(Path.of(node.getLocation())).toString().replace('\\', '/'))
+                .collect(Collectors.toSet());
+
+        StreamingResponseBody body = out -> storageAdapter.zipDirectory(location.toString(), includedRelativePaths, out);
 
         return DownloadableFile.builder()
                 .body(body)
@@ -462,10 +490,7 @@ public class FileService {
     @Transactional(rollbackFor = Exception.class)
     public FileDTO renameNode(Long id, String name) {
         var actor = userService.getMe();
-        FileEntity entity = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
-
-        verifyWriteAccess(entity, actor.id());
+        FileEntity entity = requireFileWithWriteAccess(id, actor.id());
 
         if (entity.getParentId() == null) {
             throw new BusinessException("No se puede renombrar la carpeta raíz");
@@ -512,10 +537,7 @@ public class FileService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteNode(Long id) {
         var actor = userService.getMe();
-        FileEntity entity = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
-
-        verifyWriteAccess(entity, actor.id());
+        FileEntity entity = requireFileWithWriteAccess(id, actor.id());
 
         if (entity.getParentId() == null) {
             throw new BusinessException("No se puede eliminar la carpeta raíz");
@@ -540,10 +562,7 @@ public class FileService {
     @Transactional(rollbackFor = Exception.class)
     public FileDTO restoreNode(Long id) {
         var actor = userService.getMe();
-        FileEntity entity = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
-
-        verifyWriteAccess(entity, actor.id());
+        FileEntity entity = requireFileWithWriteAccess(id, actor.id());
 
         if (entity.getDeletedAt() == null) {
             throw new BusinessException("El archivo no está en la papelera");
@@ -560,13 +579,47 @@ public class FileService {
         return response;
     }
 
+    /**
+     * Permanently deletes a single trashed node (and its whole subtree, for a folder) right now,
+     * instead of waiting for the {@value #TRASH_RETENTION_DAYS}-day {@link #purgeExpiredTrash()}
+     * sweep — previously the only ways out of the papelera were {@link #restoreNode(Long)} or that
+     * automatic sweep, so there was no lever to reclaim disk space on demand. Unlike the scheduled
+     * sweep, a disk failure here aborts the whole operation instead of being silently skipped and
+     * retried next run — this is a foreground user action, so the caller should see the error.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void purgeNode(Long id) {
+        var actor = userService.getMe();
+        FileEntity entity = requireFileWithWriteAccess(id, actor.id());
+
+        if (entity.getDeletedAt() == null) {
+            throw new BusinessException("El archivo no está en la papelera");
+        }
+
+        List<FileEntity> subtree = collectSubtree(
+                        entity, fileRepository.findByWorkspaceIdAndDeletedAtIsNotNull(entity.getWorkspaceId()))
+                .stream()
+                .sorted(Comparator.comparingInt((FileEntity e) -> Path.of(e.getLocation()).getNameCount()).reversed())
+                .toList();
+
+        for (FileEntity node : subtree) {
+            try {
+                storageAdapter.deleteIfExists(node.getLocation());
+            } catch (IOException e) {
+                throw new UncheckedIOException("No se pudo purgar: " + node.getLocation(), e);
+            }
+            fileRepository.delete(node);
+        }
+
+        FileDTO purgedNode = FileDTO.builder().id(entity.getId().toString()).name(entity.getName()).build();
+        eventPublisher.publishEvent(new FileTreeChangedEvent(entity.getWorkspaceId(), EventType.FILE_DELETED, purgedNode));
+    }
+
     public List<FileDTO> listTrash(Long workspaceId) {
         var owner = userService.getMe();
         workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
 
-        return fileRepository.findByWorkspaceIdAndDeletedAtIsNotNull(workspaceId).stream()
-                .map(this::toResponseNode)
-                .toList();
+        return toResponseNodes(fileRepository.findByWorkspaceIdAndDeletedAtIsNotNull(workspaceId));
     }
 
     /**
@@ -649,10 +702,7 @@ public class FileService {
     @Transactional(rollbackFor = Exception.class)
     public FileDTO moveNode(Long id, Long newParentId) {
         var owner = userService.getMe();
-        FileEntity entity = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
-
-        verifyWriteAccess(entity, owner.id());
+        FileEntity entity = requireFileWithWriteAccess(id, owner.id());
 
         if (entity.getParentId() == null) {
             throw new BusinessException("No se puede mover la carpeta raíz");
@@ -665,6 +715,11 @@ public class FileService {
         Map<Long, List<FileEntity>> childrenByParentId = childrenByParentId(entity.getWorkspaceId());
 
         FileEntity newParent = resolveParent(entity.getWorkspaceId(), newParentId, owner);
+        // resolveParent solo valida que el destino pertenezca al mismo workspace del archivo, no
+        // que el caller tenga acceso a esa carpeta puntual — sin este chequeo, alguien con un
+        // UserFileShare de escritura sobre un solo archivo podía reubicarlo en cualquier carpeta
+        // del workspace, incluidas las que nunca le compartieron.
+        verifyWriteAccess(newParent, owner.id());
 
         if (newParent.getId().equals(entity.getId())
                 || isDescendant(entity.getId(), newParent.getId(), childrenByParentId)) {
@@ -757,6 +812,10 @@ public class FileService {
     }
 
     private FileDTO toResponseNode(FileEntity entity) {
+        return toResponseNode(entity, activeUserShareCount(entity.getId()));
+    }
+
+    private FileDTO toResponseNode(FileEntity entity, int sharedWithUserCount) {
         return FileDTO.builder()
                 .id(entity.getId().toString())
                 .name(entity.getName())
@@ -771,9 +830,28 @@ public class FileService {
                         .lastAccessedAt(entity.getLastAccessedAt())
                         .folderColor(entity.getFolderColor())
                         .folderIcon(entity.getFolderIcon())
-                        .sharedWithUserCount(activeUserShareCount(entity.getId()))
+                        .sharedWithUserCount(sharedWithUserCount)
                         .build())
                 .build();
+    }
+
+    /**
+     * Same batching {@link #getPersonalFolder(Long)} already does for the whole tree, extracted so
+     * any flat listing endpoint (favorites, recent, trash — previously each ran one
+     * {@code activeUserShareCount} query per file via {@link #toResponseNode(FileEntity)}, an N+1
+     * on every one of them) can map its results without a per-row round trip.
+     */
+    private List<FileDTO> toResponseNodes(List<FileEntity> entities) {
+        List<Long> fileIds = entities.stream().map(FileEntity::getId).toList();
+        LocalDateTime activeCutoff = LocalDateTime.now();
+        Map<Long, Long> sharedWithUserCountByFileId = userFileShareRepository.findByFileIdIn(fileIds).stream()
+                .filter(share -> share.getExpiresAt() == null || share.getExpiresAt().isAfter(activeCutoff))
+                .collect(Collectors.groupingBy(UserFileShare::getFileId, Collectors.counting()));
+
+        return entities.stream()
+                .map(entity -> toResponseNode(entity,
+                        sharedWithUserCountByFileId.getOrDefault(entity.getId(), 0L).intValue()))
+                .toList();
     }
 
     /**
@@ -847,10 +925,7 @@ public class FileService {
 
     @Transactional(rollbackFor = Exception.class)
     public FileDTO setFavorite(Long id, boolean favorite) {
-        FileEntity entity = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
-
-        verifyWriteAccess(entity, userService.getMe().id());
+        FileEntity entity = requireFileWithWriteAccess(id, userService.getMe().id());
 
         entity.setFavorite(favorite);
         entity.setUpdatedAt(LocalDateTime.now());
@@ -864,14 +939,11 @@ public class FileService {
      * on in the UI, so allowing it there would just be silently-ignored dead state. */
     @Transactional(rollbackFor = Exception.class)
     public FileDTO setFolderCustomization(Long id, String color, String icon) {
-        FileEntity entity = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
+        FileEntity entity = requireFileWithWriteAccess(id, userService.getMe().id());
 
         if (entity.getType() != FileType.FOLDER) {
             throw new BusinessException("Solo se puede personalizar color/ícono de una carpeta");
         }
-
-        verifyWriteAccess(entity, userService.getMe().id());
 
         entity.setFolderColor(color);
         entity.setFolderIcon(icon);
@@ -885,9 +957,7 @@ public class FileService {
         var owner = userService.getMe();
         workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
 
-        return fileRepository.findByWorkspaceIdAndDeletedAtIsNullAndFavoriteTrue(workspaceId).stream()
-                .map(this::toResponseNode)
-                .toList();
+        return toResponseNodes(fileRepository.findByWorkspaceIdAndDeletedAtIsNullAndFavoriteTrue(workspaceId));
     }
 
     /** Files ordered by most-recently-accessed first, excluding anything never actually opened
@@ -897,11 +967,8 @@ public class FileService {
         workspaceService.verifyUserIsMemberOfWorkspace(workspaceId, owner.id());
 
         Pageable pageable = PageRequest.of(0, limit != null && limit > 0 ? limit : DEFAULT_RECENT_LIMIT);
-        return fileRepository
-                .findByWorkspaceIdAndDeletedAtIsNullAndLastAccessedAtIsNotNullOrderByLastAccessedAtDesc(workspaceId, pageable)
-                .stream()
-                .map(this::toResponseNode)
-                .toList();
+        return toResponseNodes(fileRepository
+                .findByWorkspaceIdAndDeletedAtIsNullAndLastAccessedAtIsNotNullOrderByLastAccessedAtDesc(workspaceId, pageable));
     }
 
     /** Files/folders another person shared with the calling user, excluding anything expired —
@@ -924,10 +991,7 @@ public class FileService {
      * reveals who has interacted with it, so it shouldn't be visible to anyone who couldn't
      * already read the file. */
     public List<FileActivityResponse> getActivity(Long id) {
-        FileEntity entity = fileRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + id));
-
-        verifyReadAccess(entity, userService.getMe().id());
+        requireFileWithReadAccess(id, userService.getMe().id());
 
         return fileActivityRepository.findByFileIdOrderByCreatedAtDesc(id).stream()
                 .map(fileActivityMapper::toResponse)

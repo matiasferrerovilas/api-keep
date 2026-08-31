@@ -14,6 +14,7 @@ import api.m2.file.record.FileShareResponse;
 import api.m2.file.repository.AppFileShareRepository;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.service.FileActivityLogService;
+import api.m2.file.service.FileMembershipGuard;
 import api.m2.file.service.FileShareEventPublisher;
 import api.m2.file.service.SharingService;
 import api.m2.file.service.UserService;
@@ -63,8 +64,8 @@ class SharingServiceTest {
     @BeforeEach
     void setUp() {
         sharingService = new SharingService(
-                fileShareRepository, fileRepository, userService, workspaceService, appFileShareMapper,
-                fileShareEventPublisher, fileActivityLogService);
+                fileShareRepository, new FileMembershipGuard(fileRepository, workspaceService), userService,
+                appFileShareMapper, fileShareEventPublisher, fileActivityLogService);
         // lenient: algunos tests (ej. revokeShare cuando el share/archivo no existe) tiran antes
         // de llegar al chequeo de membresía, así que nunca invocan getMe() — sin esto, el strict
         // stubbing de Mockito los marca como UnnecessaryStubbingException.

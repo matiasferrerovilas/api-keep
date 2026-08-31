@@ -19,6 +19,7 @@ import api.m2.file.record.events.UserFileShareEvent;
 import api.m2.file.repository.FileRepository;
 import api.m2.file.repository.UserFileShareRepository;
 import api.m2.file.service.FileActivityLogService;
+import api.m2.file.service.FileMembershipGuard;
 import api.m2.file.service.UserService;
 import api.m2.file.service.UserSharingService;
 import api.m2.file.service.workspace.WorkspaceService;
@@ -69,8 +70,8 @@ class UserSharingServiceTest {
     @BeforeEach
     void setUp() {
         userSharingService = new UserSharingService(
-                userFileShareRepository, fileRepository, userService, workspaceService, userFileShareMapper,
-                fileActivityLogService, eventPublisher);
+                userFileShareRepository, new FileMembershipGuard(fileRepository, workspaceService), userService,
+                userFileShareMapper, fileActivityLogService, eventPublisher);
         lenient().when(userService.getMe()).thenReturn(owner);
     }
 

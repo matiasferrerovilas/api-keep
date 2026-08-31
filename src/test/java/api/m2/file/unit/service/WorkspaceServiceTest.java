@@ -5,6 +5,7 @@ import api.m2.file.clients.identity.requests.AcceptRejectInvitationDTO;
 import api.m2.file.clients.identity.requests.WorkspaceSendInvitationDTO;
 import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.clients.identity.response.WorkspaceInvitationDTO;
+import api.m2.file.clients.identity.response.WorkspaceSentInvitationDTO;
 import api.m2.file.enums.InvitationStatus;
 import api.m2.file.enums.UserSettingKey;
 import api.m2.file.service.UserService;
@@ -111,5 +112,23 @@ class WorkspaceServiceTest {
         workspaceService.acceptRejectInvitation(body);
 
         verify(identityClient).acceptRejectInvitation(body);
+    }
+
+    @Test
+    void getSentInvitations_returnsWhatIdentityClientReturns() {
+        var invitation = new WorkspaceSentInvitationDTO(1L, 10L, "Familia", "invited@test.com",
+                InvitationStatus.PENDING, LocalDateTime.now());
+        when(identityClient.getSentInvitations()).thenReturn(List.of(invitation));
+
+        var result = workspaceService.getSentInvitations();
+
+        assertThat(result).containsExactly(invitation);
+    }
+
+    @Test
+    void cancelInvitation_delegatesToIdentityClient() {
+        workspaceService.cancelInvitation(5L);
+
+        verify(identityClient).cancelInvitation(5L);
     }
 }

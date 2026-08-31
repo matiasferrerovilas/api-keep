@@ -183,6 +183,25 @@ public class FileController {
     }
 
     @Operation(
+            summary = "Vaciar un elemento de la papelera al instante",
+            description = "Borra permanentemente un nodo que ya está en la papelera (y todo su subárbol, si es una "
+                    + "carpeta) ahora mismo, en vez de esperar el barrido automático del día siguiente — la única "
+                    + "forma de recuperar espacio en disco de inmediato.",
+            responses = {
+                    @ApiResponse(responseCode = "204", description = "Purgado correctamente",
+                            content = @Content(schema = @Schema(hidden = true))),
+                    @ApiResponse(responseCode = "400", description = "El archivo o carpeta no está en la papelera", content = @Content),
+                    @ApiResponse(responseCode = "403", description = "Sin permisos sobre el archivo/carpeta", content = @Content),
+                    @ApiResponse(responseCode = "404", description = "El archivo o carpeta no existe", content = @Content),
+            }
+    )
+    @DeleteMapping("/{id}/purge")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void purgeNode(@Parameter(description = "ID del archivo o carpeta a purgar") @PathVariable Long id) {
+        fileService.purgeNode(id);
+    }
+
+    @Operation(
             summary = "Listar los elementos en la papelera",
             responses = {
                     @ApiResponse(responseCode = "200", description = "Elementos en la papelera"),

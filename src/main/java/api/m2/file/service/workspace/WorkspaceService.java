@@ -5,6 +5,7 @@ import api.m2.file.clients.identity.requests.AcceptRejectInvitationDTO;
 import api.m2.file.clients.identity.requests.AddWorkspaceRecord;
 import api.m2.file.clients.identity.requests.WorkspaceSendInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceInvitationDTO;
+import api.m2.file.clients.identity.response.WorkspaceSentInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceMemberDTO;
 import api.m2.file.enums.UserSettingKey;
 import api.m2.file.exceptions.BusinessException;
@@ -84,5 +85,13 @@ public class WorkspaceService {
 
     public void acceptRejectInvitation(@Valid AcceptRejectInvitationDTO body) {
         identityClient.acceptRejectInvitation(body);
+    }
+
+    public List<WorkspaceSentInvitationDTO> getSentInvitations() {
+        return identityClient.getSentInvitations();
+    }
+
+    public void cancelInvitation(Long invitationId) {
+        identityClient.cancelInvitation(invitationId);
     }
 }

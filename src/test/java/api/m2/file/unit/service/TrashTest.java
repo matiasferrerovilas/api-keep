@@ -3,7 +3,9 @@ package api.m2.file.unit.service;
 import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.configuration.properties.StorageProperties;
 import api.m2.file.entity.FileEntity;
+import api.m2.file.entity.UserFileShare;
 import api.m2.file.enums.EventType;
+import api.m2.file.enums.SharePermission;
 import api.m2.file.exceptions.BusinessException;
 import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.mappers.FileDTOMapper;
@@ -191,6 +193,23 @@ class TrashTest {
     }
 
     @Test
+    void listTrash_batchesTheShareCountLookupInsteadOfOneQueryPerFile() {
+        FileEntity first = fileAt(1L, "a.txt", 2L);
+        first.setDeletedAt(LocalDateTime.now());
+        FileEntity second = fileAt(2L, "b.txt", 2L);
+        second.setDeletedAt(LocalDateTime.now());
+        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNotNull(5L)).thenReturn(List.of(first, second));
+        when(userFileShareRepository.findByFileIdIn(List.of(1L, 2L))).thenReturn(List.of(
+                UserFileShare.builder().id(9L).fileId(1L).sharedWithUserId(3L).sharedWithEmail("a@test.com")
+                        .permission(SharePermission.READ).createdBy(1L).build()));
+
+        List<FileDTO> result = fileService.listTrash(5L);
+
+        assertThat(result).extracting(dto -> dto.metadata().sharedWithUserCount()).containsExactly(1, 0);
+        verify(userFileShareRepository, never()).findByFileId(anyLong());
+    }
+
+    @Test
     void purgeExpiredTrash_removesFileFromDiskAndDatabase() throws IOException {
         FileEntity expired = fileAt(1L, "old.txt", 2L);
         Files.writeString(Path.of(expired.getLocation()), "contenido");
@@ -233,6 +252,53 @@ class TrashTest {
         fileService.purgeExpiredTrash();
 
         verify(fileRepository, never()).delete(any());
+    }
+
+    @Test
+    void purgeNode_removesATrashedFileFromDiskAndDatabaseImmediately() throws IOException {
+        FileEntity trashed = fileAt(1L, "old.txt", 2L);
+        Files.writeString(Path.of(trashed.getLocation()), "contenido");
+        trashed.setDeletedAt(LocalDateTime.now());
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(trashed));
+        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNotNull(5L)).thenReturn(List.of(trashed));
+
+        fileService.purgeNode(1L);
+
+        assertThat(Files.exists(Path.of(trashed.getLocation()))).isFalse();
+        verify(fileRepository).delete(trashed);
+        verifyPublishedEvent(EventType.FILE_DELETED);
+    }
+
+    @Test
+    void purgeNode_cascadesToTrashedDescendantsOfAFolder() {
+        LocalDateTime deletedAt = LocalDateTime.now();
+        FileEntity folder = folderAt(1L, "Fotos", 2L);
+        folder.setDeletedAt(deletedAt);
+        FileEntity child = fileAt(2L, "a.txt", 1L);
+        child.setDeletedAt(deletedAt);
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(folder));
+        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNotNull(5L)).thenReturn(List.of(child));
+
+        fileService.purgeNode(1L);
+
+        verify(fileRepository).delete(folder);
+        verify(fileRepository).delete(child);
+    }
+
+    @Test
+    void purgeNode_throwsWhenTheNodeIsNotInTrash() {
+        FileEntity file = fileAt(1L, "doc.txt", 2L);
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(file));
+
+        assertThatThrownBy(() -> fileService.purgeNode(1L)).isInstanceOf(BusinessException.class);
+        verify(fileRepository, never()).delete(any());
+    }
+
+    @Test
+    void purgeNode_throwsWhenTheNodeDoesNotExist() {
+        when(fileRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> fileService.purgeNode(99L)).isInstanceOf(EntityNotFoundException.class);
     }
 
     private void verifyPublishedEvent(EventType expectedType) {

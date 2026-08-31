@@ -3,7 +3,9 @@ package api.m2.file.unit.service;
 import api.m2.file.clients.identity.response.UserMe;
 import api.m2.file.configuration.properties.StorageProperties;
 import api.m2.file.entity.FileEntity;
+import api.m2.file.entity.UserFileShare;
 import api.m2.file.enums.FileType;
+import api.m2.file.enums.SharePermission;
 import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.mappers.FileDTOMapper;
 import api.m2.file.record.FileDTO;
@@ -43,6 +45,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -148,6 +151,23 @@ class FavoritesAndRecentTest {
     }
 
     @Test
+    void listFavorites_batchesTheShareCountLookupInsteadOfOneQueryPerFile() {
+        FileEntity first = fileAt(1L, "a.txt");
+        first.setFavorite(true);
+        FileEntity second = fileAt(2L, "b.txt");
+        second.setFavorite(true);
+        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNullAndFavoriteTrue(5L)).thenReturn(List.of(first, second));
+        when(userFileShareRepository.findByFileIdIn(List.of(1L, 2L))).thenReturn(List.of(
+                UserFileShare.builder().id(9L).fileId(1L).sharedWithUserId(3L).sharedWithEmail("a@test.com")
+                        .permission(SharePermission.READ).createdBy(1L).build()));
+
+        List<FileDTO> result = fileService.listFavorites(5L);
+
+        assertThat(result).extracting(dto -> dto.metadata().sharedWithUserCount()).containsExactly(1, 0);
+        verify(userFileShareRepository, never()).findByFileId(anyLong());
+    }
+
+    @Test
     void downloadFile_stampsLastAccessedAtOnActualDownload() {
         FileEntity file = fileAt(1L, "doc.txt");
         assertThat(file.getLastAccessedAt()).isNull();
@@ -186,6 +206,20 @@ class FavoritesAndRecentTest {
         List<FileDTO> result = fileService.listRecent(5L, 20);
 
         assertThat(result).isEmpty();
+    }
+
+    @Test
+    void listRecent_batchesTheShareCountLookupInsteadOfOneQueryPerFile() {
+        FileEntity recent = fileAt(1L, "nuevo.txt");
+        recent.setLastAccessedAt(LocalDateTime.now());
+        when(fileRepository.findByWorkspaceIdAndDeletedAtIsNullAndLastAccessedAtIsNotNullOrderByLastAccessedAtDesc(
+                eq(5L), any(Pageable.class))).thenReturn(List.of(recent));
+        when(userFileShareRepository.findByFileIdIn(List.of(1L))).thenReturn(List.of());
+
+        fileService.listRecent(5L, 20);
+
+        verify(userFileShareRepository).findByFileIdIn(List.of(1L));
+        verify(userFileShareRepository, never()).findByFileId(anyLong());
     }
 
     @Test

@@ -10,8 +10,6 @@ import api.m2.file.mappers.AppFileShareMapper;
 import api.m2.file.record.CreateFileShareRequest;
 import api.m2.file.record.FileShareResponse;
 import api.m2.file.repository.AppFileShareRepository;
-import api.m2.file.repository.FileRepository;
-import api.m2.file.service.workspace.WorkspaceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
@@ -30,9 +28,8 @@ import java.util.List;
 public class SharingService {
 
     private final AppFileShareRepository fileShareRepository;
-    private final FileRepository fileRepository;
+    private final FileMembershipGuard fileMembershipGuard;
     private final UserService userService;
-    private final WorkspaceService workspaceService;
     private final AppFileShareMapper appFileShareMapper;
     private final FileShareEventPublisher fileShareEventPublisher;
     private final FileActivityLogService fileActivityLogService;
@@ -41,10 +38,7 @@ public class SharingService {
     @Transactional(rollbackFor = Exception.class)
     public FileShareResponse shareFile(CreateFileShareRequest request) {
         var owner = userService.getMe();
-        FileEntity file = fileRepository.findById(request.fileId())
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + request.fileId()));
-
-        workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), owner.id());
+        FileEntity file = fileMembershipGuard.requireFileWithMembership(request.fileId(), owner.id());
 
         if (fileShareRepository.existsByFileIdAndApiName(request.fileId(), request.apiName())) {
             throw new EntityAlreadyExistsException(
@@ -70,10 +64,7 @@ public class SharingService {
 
     @PreAuthorize("hasRole('ADMIN')")
     public List<FileShareResponse> getShares(Long fileId) {
-        FileEntity file = fileRepository.findById(fileId)
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + fileId));
-
-        workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), userService.getMe().id());
+        fileMembershipGuard.requireFileWithMembership(fileId, userService.getMe().id());
 
         return fileShareRepository.findByFileId(fileId).stream()
                 .map(appFileShareMapper::toResponse)
@@ -87,10 +78,7 @@ public class SharingService {
         AppFileShare share = fileShareRepository.findById(shareId)
                 .orElseThrow(() -> new EntityNotFoundException("No se encontró el share con id " + shareId));
 
-        FileEntity file = fileRepository.findById(share.getFileId())
-                .orElseThrow(() -> new EntityNotFoundException("No se encontró el archivo con id " + share.getFileId()));
-
-        workspaceService.verifyUserIsMemberOfWorkspace(file.getWorkspaceId(), actor.id());
+        FileEntity file = fileMembershipGuard.requireFileWithMembership(share.getFileId(), actor.id());
 
         fileShareRepository.delete(share);
         fileActivityLogService.record(file.getId(), file.getWorkspaceId(), FileActivityAction.UNSHARED,
