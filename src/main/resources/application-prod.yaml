@@ -11,8 +11,8 @@ spring:
   rabbitmq:
     host: ${RABBIT_URL}
     port: 5672
-    username: api-keep
-    password: api-keep
+    username: ${RABBIT_USERNAME}
+    password: ${RABBIT_PASSWORD}
   data:
     redis:
       host: ${REDIS_URL}
