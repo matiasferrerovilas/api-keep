@@ -106,6 +106,15 @@ tasks.withType(JavaCompile).configureEach {
 	]
 }
 
+// Las tasks compileAot/compileAotTest compilan el código generado por el plugin AOT
+// de Spring Boot (build/generated/aotSources): repositorios __AotRepository, bean
+// definitions, etc. Ese código genera casts sin comprobar y llamadas a tipos raw que
+// no controlamos, así que se compila sin lint para no ensuciar la salida del build
+// (mismo motivo por el que se deshabilitan checkstyleAot/checkstyleAotTest).
+tasks.matching { it.name in ['compileAotJava', 'compileAotTestJava'] }.configureEach {
+	options.compilerArgs = ['-parameters', '-nowarn', '-Xlint:none']
+}
+
 
 checkstyle {
 	configFile = file("$rootDir/checkstyle/checkstyle.xml")

@@ -47,6 +47,7 @@ import java.util.regex.Pattern;
 public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
     private static final String USER_ID_SESSION_ATTR = "userId";
+    private static final String BEARER_PREFIX = "Bearer ";
 
     // (?i) porque los emails direccionan topics de invitaciones/shares con el casing que haya
     // usado el invitador al escribirlos, y el resto del backend ya compara emails sin distinguir
@@ -88,14 +89,14 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
     private void authenticate(StompHeaderAccessor accessor) {
         String authHeader = accessor.getFirstNativeHeader(HttpHeaders.AUTHORIZATION);
-        if (authHeader == null || !authHeader.regionMatches(true, 0, "Bearer ", 0, 7)) {
+        if (authHeader == null || !authHeader.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length())) {
             log.warn("Conexión WebSocket rechazada: sin header Authorization");
             throw new MessagingException("Falta autenticación");
         }
 
         Jwt jwt;
         try {
-            jwt = jwtDecoder.decode(authHeader.substring(7));
+            jwt = jwtDecoder.decode(authHeader.substring(BEARER_PREFIX.length()));
         } catch (JwtException e) {
             log.warn("Conexión WebSocket rechazada: token inválido");
             throw new MessagingException("Token inválido", e);
