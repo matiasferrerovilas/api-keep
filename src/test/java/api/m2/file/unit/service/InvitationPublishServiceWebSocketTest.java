@@ -3,6 +3,7 @@ package api.m2.file.unit.service;
 import api.m2.file.clients.identity.response.WorkspaceInvitationDTO;
 import api.m2.file.enums.EventType;
 import api.m2.file.enums.InvitationStatus;
+import api.m2.file.enums.WorkspaceRole;
 import api.m2.file.events.InvitationAcceptedReceivedEvent;
 import api.m2.file.events.InvitationReceivedEvent;
 import api.m2.file.record.events.EventWrapper;
@@ -36,7 +37,7 @@ class InvitationPublishServiceWebSocketTest {
     @Test
     void onInvitationReceived_publishesToTheInvitedUsersEmailScopedTopicAsAWorkspaceInvitationDTO() {
         var createdAt = LocalDateTime.now();
-        var event = new InvitationReceivedEvent(1L, 10L, "Casa", "owner@example.com", "invited@example.com", createdAt);
+        var event = new InvitationReceivedEvent(1L, 10L, "Casa", "owner@example.com", "invited@example.com", WorkspaceRole.COLLABORATOR, createdAt);
 
         service.onInvitationReceived(event);
 
@@ -54,6 +55,7 @@ class InvitationPublishServiceWebSocketTest {
         assertThat(dto.workspaceName()).isEqualTo("Casa");
         assertThat(dto.invitedByEmail()).isEqualTo("owner@example.com");
         assertThat(dto.status()).isEqualTo(InvitationStatus.PENDING);
+        assertThat(dto.role()).isEqualTo(WorkspaceRole.COLLABORATOR);
         assertThat(dto.createdAt()).isEqualTo(createdAt);
     }
 

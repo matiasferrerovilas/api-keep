@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-31
+
+### Added
+- `sendInvitation` now requires a `role` (`COLLABORATOR`/`READ_ONLY`) alongside the email list —
+  passed straight through to api-identity, which applies it to the membership when the invitee
+  accepts. `WorkspaceInvitationDTO`/`WorkspaceSentInvitationDTO` (REST responses) and the
+  WebSocket-pushed invitation payload now carry it too.
+
+## [1.9.0] - 2026-08-31
+
+### Added
+- Wired up `CacheConfiguration.USER_CACHE`, which was declared but never actually used, to cache
+  the two api-identity calls that fired on almost every request (`UserService.getMe()`,
+  `WorkspaceService.verifyUserIsMemberOfWorkspace` — the latter called from `FileMembershipGuard`/
+  `FileService` on nearly every file operation) for 5 hours, keyed per-caller (and per-workspace/
+  user pair for membership) off the authenticated principal's email. Previously every one of those
+  calls was a synchronous, uncached, timeout-less HTTP round-trip to api-identity — if it hung even
+  briefly, this app couldn't serve a single operation despite the caller's JWT still being valid.
+  A revoked membership is never masked by the cache: `verifyUserIsMemberOfWorkspace` only caches
+  the successful (granted) outcome, so a removal always re-checks against api-identity immediately.
+
 ### Security
 - `application-prod.yaml` hardcoded the RabbitMQ username/password in plain text
   (`api-keep`/`api-keep`) while `DB_USERNAME`/`DB_PASSWORD`/`REDIS_PASSWORD`/`CORS_ALLOWED_ORIGINS`

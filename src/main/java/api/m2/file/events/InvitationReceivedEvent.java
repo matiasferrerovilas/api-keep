@@ -1,5 +1,7 @@
 package api.m2.file.events;
 
+import api.m2.file.enums.WorkspaceRole;
+
 import java.time.LocalDateTime;
 
 /**
@@ -14,5 +16,6 @@ public record InvitationReceivedEvent(
         String workspaceName,
         String invitedByEmail,
         String invitedUserEmail,
+        WorkspaceRole role,
         LocalDateTime createdAt) {
 }

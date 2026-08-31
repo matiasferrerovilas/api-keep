@@ -4,11 +4,13 @@ import api.m2.file.clients.identity.IdentityClient;
 import api.m2.file.clients.identity.requests.UserToAdd;
 import api.m2.file.clients.identity.response.UserLookupResponse;
 import api.m2.file.clients.identity.response.UserMe;
+import api.m2.file.configuration.CacheConfiguration;
 import api.m2.file.enums.UserType;
 import api.m2.file.exceptions.EntityNotFoundException;
 import api.m2.file.exceptions.PermissionDeniedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClientResponseException;
@@ -22,8 +24,15 @@ public class UserService {
     private static final String EMAIL_CLAIM = "email";
     private static final String GIVEN_NAME_CLAIM = "given_name";
     private static final String FAMILY_NAME_CLAIM = "family_name";
+    private static final String CALLER_EMAIL_SPEL =
+            "T(org.springframework.security.core.context.SecurityContextHolder).context.authentication.name";
 
+    // Cacheado por 5hs (ver CacheConfiguration.USER_CACHE) — antes esto disparaba un round-trip
+    // HTTP a api-identity en casi cada endpoint de la app, sin cache, sin timeout y sin circuit
+    // breaker. Cambios de nombre/tipo de usuario pueden tardar hasta ese tiempo en reflejarse acá
+    // a cambio de sacar a api-identity del camino crítico de casi todo el tráfico.
     @Transactional
+    @Cacheable(cacheNames = CacheConfiguration.USER_CACHE, key = "'me:' + " + CALLER_EMAIL_SPEL)
     public UserMe getMe() {
         return identityClient.getMe();
     }

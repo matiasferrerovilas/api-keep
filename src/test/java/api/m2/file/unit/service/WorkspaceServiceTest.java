@@ -8,6 +8,8 @@ import api.m2.file.clients.identity.response.WorkspaceInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceSentInvitationDTO;
 import api.m2.file.enums.InvitationStatus;
 import api.m2.file.enums.UserSettingKey;
+import api.m2.file.enums.WorkspaceRole;
+import api.m2.file.exceptions.PermissionDeniedException;
 import api.m2.file.service.UserService;
 import api.m2.file.service.settings.UserSettingService;
 import api.m2.file.service.workspace.WorkspaceService;
@@ -16,14 +18,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -86,9 +92,27 @@ class WorkspaceServiceTest {
     }
 
     @Test
+    void verifyUserIsMemberOfWorkspace_delegatesToIdentityClient() {
+        doNothing().when(identityClient).verifyMembership(10L, 1L);
+
+        workspaceService.verifyUserIsMemberOfWorkspace(10L, 1L);
+
+        verify(identityClient).verifyMembership(10L, 1L);
+    }
+
+    @Test
+    void verifyUserIsMemberOfWorkspace_translatesIdentityRejectionIntoPermissionDenied() {
+        doThrow(new RestClientResponseException("Forbidden", 403, "Forbidden", null, null, null))
+                .when(identityClient).verifyMembership(10L, 1L);
+
+        assertThatThrownBy(() -> workspaceService.verifyUserIsMemberOfWorkspace(10L, 1L))
+                .isInstanceOf(PermissionDeniedException.class);
+    }
+
+    @Test
     void getMyInvitations_returnsWhatIdentityClientReturns() {
         var invitation = new WorkspaceInvitationDTO(1L, 10L, "Familia", "owner@test.com",
-                InvitationStatus.PENDING, LocalDateTime.now());
+                InvitationStatus.PENDING, WorkspaceRole.COLLABORATOR, LocalDateTime.now());
         when(identityClient.getInvitations()).thenReturn(List.of(invitation));
 
         var result = workspaceService.getMyInvitations();
@@ -98,7 +122,7 @@ class WorkspaceServiceTest {
 
     @Test
     void sendInvitation_delegatesToIdentityClient() {
-        var body = new WorkspaceSendInvitationDTO(10L, List.of("nuevo@test.com"));
+        var body = new WorkspaceSendInvitationDTO(10L, List.of("nuevo@test.com"), WorkspaceRole.COLLABORATOR);
 
         workspaceService.sendInvitation(10L, body);
 
@@ -117,7 +141,7 @@ class WorkspaceServiceTest {
     @Test
     void getSentInvitations_returnsWhatIdentityClientReturns() {
         var invitation = new WorkspaceSentInvitationDTO(1L, 10L, "Familia", "invited@test.com",
-                InvitationStatus.PENDING, LocalDateTime.now());
+                InvitationStatus.PENDING, WorkspaceRole.COLLABORATOR, LocalDateTime.now());
         when(identityClient.getSentInvitations()).thenReturn(List.of(invitation));
 
         var result = workspaceService.getSentInvitations();

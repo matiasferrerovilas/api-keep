@@ -7,6 +7,7 @@ import api.m2.file.clients.identity.requests.WorkspaceSendInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceSentInvitationDTO;
 import api.m2.file.clients.identity.response.WorkspaceMemberDTO;
+import api.m2.file.configuration.CacheConfiguration;
 import api.m2.file.enums.UserSettingKey;
 import api.m2.file.exceptions.BusinessException;
 import api.m2.file.exceptions.PermissionDeniedException;
@@ -15,6 +16,7 @@ import api.m2.file.service.settings.UserSettingService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClientResponseException;
@@ -33,6 +35,12 @@ public class WorkspaceService {
         return identityClient.getWorkspaces();
     }
 
+    // Cacheado por 5hs (ver CacheConfiguration.USER_CACHE). @Cacheable en un método void solo
+    // cachea la ejecución exitosa (Spring no cachea si el método tira excepción) — una membership
+    // confirmada se recuerda por la ventana completa, pero un rechazo siempre se re-verifica
+    // contra api-identity, así que sacar a alguien de un workspace corta su acceso de inmediato,
+    // no recién cuando expire el cache.
+    @Cacheable(cacheNames = CacheConfiguration.USER_CACHE, key = "'membership:' + #workspaceId + ':' + #userId")
     public void verifyUserIsMemberOfWorkspace(Long workspaceId, Long userId) {
         try {
             identityClient.verifyMembership(workspaceId, userId);
