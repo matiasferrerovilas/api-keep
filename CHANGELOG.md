@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-09-01
+
+### Fixed
+- `UserService.getMe()`'s `@Cacheable` key used
+  `T(org.springframework.security.core.context.SecurityContextHolder)...` — a SpEL type
+  reference, resolved via `Class.forName` against whatever classloader `StandardTypeLocator` picks
+  up. In the packaged app (Tomcat handling requests on virtual threads), that resolution can throw
+  `SpelEvaluationException: EL1005E: Type cannot be found` on every cached call — never reproduced
+  under tests, whose flat classpath doesn't hit the same classloader path (found live in
+  api-movements, fixed here preemptively since both share the exact same pattern). Replaced with a
+  `@userService.getAuthenticatedEmail()` bean-reference expression (new method), which resolves
+  through the `BeanFactoryResolver` instead of `Class.forName` and isn't sensitive to which
+  classloader the current thread happens to have.
+
 ## [1.10.0] - 2026-08-31
 
 ### Added

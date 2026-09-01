@@ -11,9 +11,13 @@ import api.m2.file.exceptions.PermissionDeniedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClientResponseException;
+
+import java.util.Optional;
 
 @Service
 @Slf4j
@@ -24,17 +28,32 @@ public class UserService {
     private static final String EMAIL_CLAIM = "email";
     private static final String GIVEN_NAME_CLAIM = "given_name";
     private static final String FAMILY_NAME_CLAIM = "family_name";
-    private static final String CALLER_EMAIL_SPEL =
-            "T(org.springframework.security.core.context.SecurityContextHolder).context.authentication.name";
 
     // Cacheado por 5hs (ver CacheConfiguration.USER_CACHE) — antes esto disparaba un round-trip
     // HTTP a api-identity en casi cada endpoint de la app, sin cache, sin timeout y sin circuit
     // breaker. Cambios de nombre/tipo de usuario pueden tardar hasta ese tiempo en reflejarse acá
     // a cambio de sacar a api-identity del camino crítico de casi todo el tráfico.
+    //
+    // La key usa @userService.getAuthenticatedEmail() (referencia a este mismo bean) en vez de
+    // T(org.springframework.security.core.context.SecurityContextHolder)...: T(FQCN) resuelve el
+    // tipo vía Class.forName con el classloader que StandardTypeLocator tenga a mano, que en el
+    // hilo virtual que atiende el request (Tomcat con virtual threads) no es el mismo classloader
+    // que cargó el fat jar — tira "EL1005E: Type cannot be found" en runtime aunque compile y
+    // pase los tests (JVM de test con classpath plano, sin ese problema). @bean.metodo() resuelve
+    // por BeanFactoryResolver, no por Class.forName, así que no depende del classloader del hilo.
     @Transactional
-    @Cacheable(cacheNames = CacheConfiguration.USER_CACHE, key = "'me:' + " + CALLER_EMAIL_SPEL)
+    @Cacheable(cacheNames = CacheConfiguration.USER_CACHE, key = "'me:' + @userService.getAuthenticatedEmail()")
     public UserMe getMe() {
         return identityClient.getMe();
+    }
+
+    /** Resuelve el email del caller autenticado desde el SecurityContext — usado como key de
+     * {@link #getMe()} vía referencia de bean en el SpEL (ver comentario ahí). */
+    public String getAuthenticatedEmail() {
+        return Optional.ofNullable(SecurityContextHolder.getContext().getAuthentication())
+                .filter(Authentication::isAuthenticated)
+                .map(Authentication::getName)
+                .orElseThrow(() -> new PermissionDeniedException("Usuario no autenticado"));
     }
 
     /** Resolves an email to an existing user, for creating a user-to-user file share — fails
