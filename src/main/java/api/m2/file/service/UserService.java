@@ -35,12 +35,13 @@ public class UserService {
     // a cambio de sacar a api-identity del camino crítico de casi todo el tráfico.
     //
     // La key usa @userService.getAuthenticatedEmail() (referencia a este mismo bean) en vez de
-    // T(org.springframework.security.core.context.SecurityContextHolder)...: T(FQCN) resuelve el
-    // tipo vía Class.forName con el classloader que StandardTypeLocator tenga a mano, que en el
-    // hilo virtual que atiende el request (Tomcat con virtual threads) no es el mismo classloader
-    // que cargó el fat jar — tira "EL1005E: Type cannot be found" en runtime aunque compile y
-    // pase los tests (JVM de test con classpath plano, sin ese problema). @bean.metodo() resuelve
-    // por BeanFactoryResolver, no por Class.forName, así que no depende del classloader del hilo.
+    // T(org.springframework.security.core.context.SecurityContextHolder)...: esta app corre como
+    // native image (GraalVM), y T(FQCN) resuelve el tipo vía Class.forName en runtime — un tipo
+    // no registrado explícitamente en la reflection config del native image tira "EL1005E: Type
+    // cannot be found" aunque esa misma clase esté siendo usada activamente por el resto de la
+    // app (Spring Security). Nunca se reproduce en tests porque ahí corre en JVM normal, sin la
+    // reflection config cerrada del native image. @bean.metodo() resuelve por BeanFactoryResolver,
+    // no por Class.forName, así que esquiva el problema en vez de requerir registrar el tipo.
     @Transactional
     @Cacheable(cacheNames = CacheConfiguration.USER_CACHE, key = "'me:' + @userService.getAuthenticatedEmail()")
     public UserMe getMe() {

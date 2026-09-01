@@ -12,14 +12,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `UserService.getMe()`'s `@Cacheable` key used
   `T(org.springframework.security.core.context.SecurityContextHolder)...` — a SpEL type
-  reference, resolved via `Class.forName` against whatever classloader `StandardTypeLocator` picks
-  up. In the packaged app (Tomcat handling requests on virtual threads), that resolution can throw
-  `SpelEvaluationException: EL1005E: Type cannot be found` on every cached call — never reproduced
-  under tests, whose flat classpath doesn't hit the same classloader path (found live in
-  api-movements, fixed here preemptively since both share the exact same pattern). Replaced with a
-  `@userService.getAuthenticatedEmail()` bean-reference expression (new method), which resolves
-  through the `BeanFactoryResolver` instead of `Class.forName` and isn't sensitive to which
-  classloader the current thread happens to have.
+  reference, resolved via `Class.forName` at runtime. This app runs as a GraalVM native image, and
+  a type not explicitly registered in the native-image reflection config throws
+  `SpelEvaluationException: EL1005E: Type cannot be found` when looked up this way — even one
+  actively used elsewhere in the app (Spring Security's own filter chain, in this case). Never
+  reproduced under tests, which run on a normal JVM with no such closed-world reflection
+  restriction (found live in api-movements, fixed here preemptively since both share the exact
+  same pattern). Replaced with a `@userService.getAuthenticatedEmail()` bean-reference expression
+  (new method), which resolves through the `BeanFactoryResolver` instead of `Class.forName` and
+  needs no reflection registration at all.
+- Same native-image reflection gap, different mechanism: several record/event types are only ever
+  serialized via `SimpMessagingTemplate.convertAndSend(topic, Object)` (WebSocket) or deserialized
+  via `@RabbitListener` — neither path is visible to Spring's AOT MVC-controller scanning, so none
+  of `FileDTO`/`WorkspaceInvitationDTO`/`InvitationReceivedEvent`/`InvitationAcceptedReceivedEvent`/
+  `MemberRemovedReceivedEvent`/`UserFileShareEvent`/`EventWrapper` were registered for reflection —
+  this repo had no `RuntimeHints` registrar at all until now (api-movements already had one,
+  missing the same handful of types — see its changelog). New `WebBindingRuntimeHints`, wired via
+  `@ImportRuntimeHints` on `ApiKeepApplication`. Fixed preemptively — hadn't thrown here yet, but
+  the exact same live crash api-movements hit (`UnsupportedFeatureError: Record components not
+  available`) was only one WebSocket push away.
 
 ## [1.10.0] - 2026-08-31
 
